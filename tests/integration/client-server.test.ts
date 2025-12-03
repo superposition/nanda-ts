@@ -11,7 +11,7 @@ import type { Task, MessageSendParams } from '../../src/types';
 
 // Helper to get a random available port
 function getRandomPort(): number {
-  return 50000 + Math.floor(Math.random() * 10000);
+  return 20000 + Math.floor(Math.random() * 40000);
 }
 
 describe('Client-Server Integration', () => {
@@ -342,7 +342,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent that throws errors',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0, // Use OS-assigned port to avoid conflicts
         skills: [],
       });
 
@@ -352,7 +352,9 @@ describe('Client-Server Integration', () => {
 
       await server.start();
 
-      client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+      // Get actual port from agent card URL
+      const agentUrl = new URL(server.getAgentCard().url);
+      client = new A2AClient({ agentUrl: agentUrl.toString() });
 
       await expect(
         client.sendMessage({
