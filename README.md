@@ -2,6 +2,50 @@
 
 A Bun-native TypeScript SDK for the NANDA ecosystem, implementing A2A, MCP, and NLWeb protocols with registry integration and AgentFacts support.
 
+## Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "NANDA-TS SDK"
+        subgraph "Protocols"
+            A2A[A2A Client]
+            MCP[MCP Bridge]
+            NLWeb[NLWeb Client]
+        end
+
+        subgraph "Server"
+            AS[AgentServer]
+            RPC[JSON-RPC Handler]
+            HC[Health Check]
+        end
+
+        subgraph "Registry"
+            IC[IndexClient]
+            QR[QuiltResolver]
+            Cache[(SQLite Cache)]
+        end
+
+        subgraph "Identity"
+            ID[Agent Identity]
+            AF[AgentFacts]
+            Crypto[Ed25519 Crypto]
+        end
+    end
+
+    Client[Client App] --> A2A
+    A2A --> AS
+    AS --> RPC
+    RPC --> HC
+
+    A2A --> IC
+    IC --> Cache
+    IC --> QR
+
+    AS --> ID
+    ID --> Crypto
+    ID --> AF
+```
+
 ## Features
 
 - **A2A Protocol v0.3.0** - Full implementation of Google's Agent-to-Agent protocol
@@ -113,6 +157,56 @@ bunx nanda-ts dev
 
 # Register with NANDA
 bunx nanda-ts register my-agent https://example.com/facts.json
+```
+
+## Protocol Flows
+
+### A2A Message Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as Agent Server
+    participant R as NANDA Registry
+
+    Note over C,R: Discovery Phase
+    C->>R: resolve(handle)
+    R-->>C: Agent Card URL
+
+    C->>A: GET /.well-known/agent.json
+    A-->>C: Agent Card (skills, capabilities)
+
+    Note over C,A: Messaging Phase
+    C->>A: POST /rpc {method: "message/send"}
+    A-->>C: Task {id, state: "SUBMITTED"}
+
+    Note over A: Processing...
+    A->>A: Update state to "WORKING"
+
+    C->>A: POST /rpc {method: "tasks/get"}
+    A-->>C: Task {id, state: "COMPLETED", message}
+```
+
+### Registry Integration
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant R as NANDA Registry
+    participant C as Client
+
+    Note over A,R: Registration
+    A->>A: Generate DID identity
+    A->>A: Create AgentFacts
+    A->>R: POST /register {handle, factsUrl}
+    R-->>A: Registration confirmed
+
+    Note over C,R: Discovery
+    C->>R: GET /search?query=translation
+    R-->>C: List of matching agents
+
+    C->>R: GET /resolve/my-agent
+    R-->>C: Agent Card URL + metadata
 ```
 
 ## API Reference
@@ -231,6 +325,28 @@ type TaskState =
   | 'COMPLETED'      // Successfully completed
   | 'FAILED'         // Failed with error
   | 'CANCELLED';     // Cancelled by user
+```
+
+### Task State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> SUBMITTED: message/send
+
+    SUBMITTED --> WORKING: Agent starts processing
+    SUBMITTED --> CANCELLED: tasks/cancel
+
+    WORKING --> COMPLETED: Success
+    WORKING --> FAILED: Error
+    WORKING --> INPUT_REQUIRED: Need more info
+    WORKING --> CANCELLED: tasks/cancel
+
+    INPUT_REQUIRED --> WORKING: User provides input
+    INPUT_REQUIRED --> CANCELLED: tasks/cancel
+
+    COMPLETED --> [*]
+    FAILED --> [*]
+    CANCELLED --> [*]
 ```
 
 ## Development
