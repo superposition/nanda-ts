@@ -1,0 +1,106 @@
+{
+  "name": "nanda-ts",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Bun-native TypeScript SDK for the NANDA ecosystem - A2A, MCP, and NLWeb protocols",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "bun": "./src/client/index.ts",
+      "import": "./dist/client/index.js",
+      "types": "./dist/client/index.d.ts"
+    },
+    "./server": {
+      "bun": "./src/server/index.ts",
+      "import": "./dist/server/index.js",
+      "types": "./dist/server/index.d.ts"
+    },
+    "./protocols/a2a": {
+      "bun": "./src/protocols/a2a/index.ts",
+      "import": "./dist/protocols/a2a/index.js",
+      "types": "./dist/protocols/a2a/index.d.ts"
+    },
+    "./protocols/mcp": {
+      "bun": "./src/protocols/mcp/index.ts",
+      "import": "./dist/protocols/mcp/index.js",
+      "types": "./dist/protocols/mcp/index.d.ts"
+    },
+    "./protocols/nlweb": {
+      "bun": "./src/protocols/nlweb/index.ts",
+      "import": "./dist/protocols/nlweb/index.js",
+      "types": "./dist/protocols/nlweb/index.d.ts"
+    },
+    "./registry": {
+      "bun": "./src/registry/index.ts",
+      "import": "./dist/registry/index.js",
+      "types": "./dist/registry/index.d.ts"
+    },
+    "./agent": {
+      "bun": "./src/agent/index.ts",
+      "import": "./dist/agent/index.js",
+      "types": "./dist/agent/index.d.ts"
+    },
+    "./crypto": {
+      "bun": "./src/crypto/index.ts",
+      "import": "./dist/crypto/index.js",
+      "types": "./dist/crypto/index.d.ts"
+    }
+  },
+  "bin": {
+    "nanda-ts": "./cli/index.ts"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts --outdir ./dist --target bun",
+    "build:node": "bun build ./src/index.ts --outdir ./dist --target node",
+    "dev": "bun --watch src/index.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "bunx biome check .",
+    "format": "bunx biome format --write .",
+    "prepublishOnly": "bun run build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "bun": ">=1.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@noble/ed25519": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "keywords": [
+    "nanda",
+    "ai-agents",
+    "a2a",
+    "mcp",
+    "nlweb",
+    "bun",
+    "typescript",
+    "decentralized",
+    "agent-communication",
+    "json-rpc"
+  ],
+  "author": "Eric Manganaro",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/superposition/nanda-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/superposition/nanda-ts/issues"
+  },
+  "homepage": "https://github.com/superposition/nanda-ts#readme"
+}
