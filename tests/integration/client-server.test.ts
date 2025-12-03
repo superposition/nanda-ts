@@ -9,19 +9,16 @@ import { AgentServer } from '../../src/server/AgentServer';
 import { A2AClient } from '../../src/protocols/a2a/A2AClient';
 import type { Task, MessageSendParams } from '../../src/types';
 
-// Helper to get a random available port
-function getRandomPort(): number {
-  return 20000 + Math.floor(Math.random() * 40000);
+// Helper to get port from AgentServer after start
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
 }
 
 describe('Client-Server Integration', () => {
   let server: AgentServer;
   let client: A2AClient;
   let port: number;
-
-  beforeEach(async () => {
-    port = getRandomPort();
-  });
 
   afterEach(async () => {
     if (server) {
@@ -36,7 +33,7 @@ describe('Client-Server Integration', () => {
         description: 'Integration test agent',
         version: '1.0.0',
         provider: { organization: 'Integration Test' },
-        port,
+        port: 0,
         skills: [
           {
             id: 'greet',
@@ -69,6 +66,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
@@ -101,7 +99,7 @@ describe('Client-Server Integration', () => {
         description: 'Multi-turn conversation agent',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -132,6 +130,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
       const contextId = crypto.randomUUID();
@@ -169,7 +168,7 @@ describe('Client-Server Integration', () => {
         description: 'Asynchronous processing agent',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -200,6 +199,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
@@ -217,7 +217,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent requiring input',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -238,6 +238,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
@@ -254,7 +255,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent that reports failure',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -275,6 +276,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
@@ -293,7 +295,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent producing artifacts',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -322,6 +324,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
@@ -342,7 +345,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent that throws errors',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port: 0, // Use OS-assigned port to avoid conflicts
+        port: 0,
         skills: [],
       });
 
@@ -351,10 +354,9 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
-      // Get actual port from agent card URL
-      const agentUrl = new URL(server.getAgentCard().url);
-      client = new A2AClient({ agentUrl: agentUrl.toString() });
+      client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 
       await expect(
         client.sendMessage({
@@ -369,7 +371,7 @@ describe('Client-Server Integration', () => {
         description: 'Agent handling concurrent requests',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -398,6 +400,7 @@ describe('Client-Server Integration', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       client = new A2AClient({ agentUrl: `http://localhost:${port}` });
 

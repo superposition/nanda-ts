@@ -10,17 +10,13 @@ import { MOCK_REGISTRY_AGENTS, findMockAgent, searchMockAgents } from '../__mock
 
 describe('IndexClient Unit Tests', () => {
   let mockRegistryServer: ReturnType<typeof Bun.serve>;
-  let registryPort: number;
   let client: IndexClient;
 
   beforeEach(() => {
-    // Use a random port to avoid conflicts
-    registryPort = 10000 + Math.floor(Math.random() * 10000);
-
-    // Create a mock registry server
+    // Create a mock registry server with port 0 for OS-assigned port
     mockRegistryServer = Bun.serve({
-      port: registryPort,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
         const path = url.pathname;
 
@@ -72,7 +68,7 @@ describe('IndexClient Unit Tests', () => {
     });
 
     client = createIndexClient({
-      baseUrl: `http://localhost:${registryPort}`,
+      baseUrl: `http://localhost:${mockRegistryServer.port}`,
       cacheEnabled: false, // Disable cache for tests
     });
   });
@@ -149,17 +145,15 @@ describe('IndexClient Unit Tests', () => {
 
 describe('IndexClient Error Handling', () => {
   it('should handle server errors', async () => {
-    const port = 10000 + Math.floor(Math.random() * 10000);
-
     const errorServer = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return Response.json({ error: 'Internal error' }, { status: 500 });
       },
     });
 
     const client = createIndexClient({
-      baseUrl: `http://localhost:${port}`,
+      baseUrl: `http://localhost:${errorServer.port}`,
       cacheEnabled: false,
     });
 
@@ -172,11 +166,9 @@ describe('IndexClient Error Handling', () => {
   });
 
   it('should handle invalid JSON responses', async () => {
-    const port = 10000 + Math.floor(Math.random() * 10000);
-
     const badJsonServer = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('not json', {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -184,7 +176,7 @@ describe('IndexClient Error Handling', () => {
     });
 
     const client = createIndexClient({
-      baseUrl: `http://localhost:${port}`,
+      baseUrl: `http://localhost:${badJsonServer.port}`,
       cacheEnabled: false,
     });
 

@@ -7,18 +7,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { AgentServer } from '../../src/server/AgentServer';
 
-// Helper to get a random available port
-function getRandomPort(): number {
-  return 20000 + Math.floor(Math.random() * 10000);
+// Helper to get port from AgentServer after start
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
 }
 
 describe('AgentServer Unit Tests', () => {
   let server: AgentServer;
   let port: number;
-
-  beforeEach(() => {
-    port = getRandomPort();
-  });
 
   afterEach(async () => {
     if (server) {
@@ -33,7 +30,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test server lifecycle',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -50,7 +47,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test double start handling',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -68,7 +65,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test stop when not running',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -84,7 +81,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test agent card serving',
         version: '2.0.0',
         provider: { organization: 'Card Test Org' },
-        port,
+        port: 0,
         skills: [
           {
             id: 'test-skill',
@@ -98,6 +95,7 @@ describe('AgentServer Unit Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/.well-known/agent.json`);
       expect(response.ok).toBe(true);
@@ -118,11 +116,12 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test health check',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/health`);
       expect(response.ok).toBe(true);
@@ -140,7 +139,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test RPC handling',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -158,6 +157,7 @@ describe('AgentServer Unit Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/rpc`, {
         method: 'POST',
@@ -189,11 +189,12 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test invalid JSON handling',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/rpc`, {
         method: 'POST',
@@ -212,11 +213,12 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test missing method handling',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/rpc`, {
         method: 'POST',
@@ -239,11 +241,12 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test unknown method handling',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const response = await fetch(`http://localhost:${port}/rpc`, {
         method: 'POST',
@@ -269,7 +272,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test tasks/get method',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -289,6 +292,7 @@ describe('AgentServer Unit Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       // First create a task
       const createResponse = await fetch(`http://localhost:${port}/rpc`, {
@@ -333,7 +337,7 @@ describe('AgentServer Unit Tests', () => {
         description: 'Test tasks/list method',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
       });
 
@@ -350,6 +354,7 @@ describe('AgentServer Unit Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       // Create a task first
       await fetch(`http://localhost:${port}/rpc`, {

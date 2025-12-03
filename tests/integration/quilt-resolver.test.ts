@@ -11,19 +11,13 @@ import {
 } from '../../src/registry/QuiltResolver';
 import type { AgentCard } from '../../src/types';
 
-// Helper to get random port
-function getRandomPort(): number {
-  return 40000 + Math.floor(Math.random() * 10000);
-}
-
-// Helper to create a mock registry server
+// Helper to create a mock registry server with port 0
 function createMockRegistry(
-  port: number,
   agents: Record<string, { agent_id: string; agent_name: string; primary_facts_url: string; adaptive_resolver_url?: string }>
 ): ReturnType<typeof Bun.serve> {
-  return Bun.serve({
-    port,
-    fetch(req) {
+  const server = Bun.serve({
+    port: 0,
+    fetch(req: Request): Response {
       const url = new URL(req.url);
 
       // Handle resolve: GET /agents/{handle}
@@ -56,6 +50,7 @@ function createMockRegistry(
       return new Response('Not Found', { status: 404 });
     },
   });
+  return server;
 }
 
 describe('QuiltResolver', () => {
@@ -238,19 +233,30 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should resolve from single registry', async () => {
-    const port = getRandomPort();
-    servers.push(
-      createMockRegistry(port, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port}/facts.json`,
-        },
-      })
-    );
+    const server = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: `http://localhost:${0}/facts.json`,
+      },
+    });
+    servers.push(server);
+    const port = server.port;
+
+    // Update the mock data with actual port
+    server.stop();
+    const serverWithPort = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: `http://localhost:${port}/facts.json`,
+      },
+    });
+    servers = [serverWithPort];
+    const actualPort = serverWithPort.port;
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${actualPort}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
@@ -260,11 +266,11 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should return null for unknown handle', async () => {
-    const port = getRandomPort();
-    servers.push(createMockRegistry(port, {}));
+    const server = createMockRegistry({});
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@unknown/agent');
@@ -273,27 +279,24 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should resolve in parallel mode (first success wins)', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // First registry doesn't have the agent
-    servers.push(createMockRegistry(port1, {}));
+    const server1 = createMockRegistry({});
+    servers.push(server1);
 
     // Second registry has the agent
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'agent-from-r2',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-from-r2',
+        agent_name: '@org/agent',
+        primary_facts_url: `http://localhost:${0}/facts.json`,
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${server1.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
       parallel: true,
     });
@@ -305,27 +308,24 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should resolve in sequential mode', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // First registry doesn't have the agent
-    servers.push(createMockRegistry(port1, {}));
+    const server1 = createMockRegistry({});
+    servers.push(server1);
 
     // Second registry has the agent
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'agent-from-r2',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-from-r2',
+        agent_name: '@org/agent',
+        primary_facts_url: `http://localhost:${0}/facts.json`,
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${server1.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
       parallel: false,
     });
@@ -337,65 +337,91 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should extract endpoints with adaptive_resolver_url', async () => {
-    const port = getRandomPort();
-    servers.push(
-      createMockRegistry(port, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port}/facts.json`,
-          adaptive_resolver_url: `http://localhost:${port}/a2a`,
-        },
-      })
-    );
+    const server = Bun.serve({
+      port: 0,
+      fetch(req: Request): Response {
+        const url = new URL(req.url);
+        if (url.pathname.startsWith('/agents/') && req.method === 'GET') {
+          if (url.pathname !== '/agents/search') {
+            const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
+            if (handle === '@org/agent') {
+              // Use the server's own port in the response
+              const serverUrl = `http://localhost:${server.port}`;
+              return new Response(
+                JSON.stringify({
+                  agent_id: 'agent-1',
+                  agent_name: '@org/agent',
+                  primary_facts_url: `${serverUrl}/facts.json`,
+                  adaptive_resolver_url: `${serverUrl}/a2a`,
+                }),
+                { headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+          }
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
 
-    expect(result?.endpoints.a2a).toBe(`http://localhost:${port}/a2a`);
-    expect(result?.endpoints.facts).toBe(`http://localhost:${port}/facts.json`);
-    expect(result?.endpoints.health).toBe(`http://localhost:${port}/a2a/health`);
+    expect(result?.endpoints.a2a).toBe(`http://localhost:${server.port}/a2a`);
+    expect(result?.endpoints.facts).toBe(`http://localhost:${server.port}/facts.json`);
+    expect(result?.endpoints.health).toBe(`http://localhost:${server.port}/a2a/health`);
   });
 
   it('should derive a2a endpoint from facts URL when no adaptive_resolver', async () => {
-    const port = getRandomPort();
-    servers.push(
-      createMockRegistry(port, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port}/path/facts.json`,
-        },
-      })
-    );
+    const server = Bun.serve({
+      port: 0,
+      fetch(req: Request): Response {
+        const url = new URL(req.url);
+        if (url.pathname.startsWith('/agents/') && req.method === 'GET') {
+          if (url.pathname !== '/agents/search') {
+            const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
+            if (handle === '@org/agent') {
+              return new Response(
+                JSON.stringify({
+                  agent_id: 'agent-1',
+                  agent_name: '@org/agent',
+                  primary_facts_url: `http://localhost:${server.port}/path/facts.json`,
+                }),
+                { headers: { 'Content-Type': 'application/json' } }
+              );
+            }
+          }
+        }
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
 
     // Should derive from origin of facts URL
-    expect(result?.endpoints.a2a).toBe(`http://localhost:${port}`);
+    expect(result?.endpoints.a2a).toBe(`http://localhost:${server.port}`);
   });
 
   it('should include resolvedAt timestamp', async () => {
-    const port = getRandomPort();
-    servers.push(
-      createMockRegistry(port, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port}/facts.json`,
-        },
-      })
-    );
+    const server = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const before = new Date();
@@ -408,34 +434,29 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should handle registry errors gracefully in parallel mode', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // First registry returns error
-    servers.push(
-      Bun.serve({
-        port: port1,
-        fetch() {
-          return new Response('Server Error', { status: 500 });
-        },
-      })
-    );
+    const errorServer = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('Server Error', { status: 500 });
+      },
+    });
+    servers.push(errorServer);
 
     // Second registry works
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${errorServer.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
       parallel: true,
     });
@@ -447,34 +468,29 @@ describe('QuiltResolver.resolve', () => {
   });
 
   it('should handle registry errors gracefully in sequential mode', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // First registry returns error
-    servers.push(
-      Bun.serve({
-        port: port1,
-        fetch() {
-          return new Response('Server Error', { status: 500 });
-        },
-      })
-    );
+    const errorServer = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('Server Error', { status: 500 });
+      },
+    });
+    servers.push(errorServer);
 
     // Second registry works
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${errorServer.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
       parallel: false,
     });
@@ -496,53 +512,49 @@ describe('QuiltResolver.resolve with AgentCard', () => {
   });
 
   it('should fetch AgentCard when available', async () => {
-    const port = getRandomPort();
+    const server = Bun.serve({
+      port: 0,
+      fetch(req: Request): Response {
+        const url = new URL(req.url);
 
-    const mockCard: AgentCard = {
-      name: 'test-agent',
-      description: 'A test agent',
-      url: `http://localhost:${port}`,
-      version: '1.0.0',
-      defaultInputModes: ['text'],
-      defaultOutputModes: ['text'],
-      capabilities: { streaming: true, pushNotifications: false },
-      skills: [],
-    };
-
-    servers.push(
-      Bun.serve({
-        port,
-        fetch(req) {
-          const url = new URL(req.url);
-
-          // Handle resolve: /agents/{handle} (URL encoded)
-          if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
-            const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
-            if (handle === '@org/agent') {
-              return new Response(
-                JSON.stringify({
-                  agent_id: 'agent-1',
-                  agent_name: '@org/agent',
-                  primary_facts_url: `http://localhost:${port}/facts.json`,
-                }),
-                { headers: { 'Content-Type': 'application/json' } }
-              );
-            }
+        // Handle resolve: /agents/{handle} (URL encoded)
+        if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
+          const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
+          if (handle === '@org/agent') {
+            return new Response(
+              JSON.stringify({
+                agent_id: 'agent-1',
+                agent_name: '@org/agent',
+                primary_facts_url: `http://localhost:${server.port}/facts.json`,
+              }),
+              { headers: { 'Content-Type': 'application/json' } }
+            );
           }
+        }
 
-          if (url.pathname === '/.well-known/agent.json') {
-            return new Response(JSON.stringify(mockCard), {
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
+        if (url.pathname === '/.well-known/agent.json') {
+          const mockCard: AgentCard = {
+            name: 'test-agent',
+            description: 'A test agent',
+            url: `http://localhost:${server.port}`,
+            version: '1.0.0',
+            defaultInputModes: ['text'],
+            defaultOutputModes: ['text'],
+            capabilities: { streaming: true, pushNotifications: false },
+            skills: [],
+          };
+          return new Response(JSON.stringify(mockCard), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-          return new Response('Not Found', { status: 404 });
-        },
-      })
-    );
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
@@ -553,54 +565,50 @@ describe('QuiltResolver.resolve with AgentCard', () => {
   });
 
   it('should use AgentCard URL for a2a endpoint', async () => {
-    const port = getRandomPort();
+    const server = Bun.serve({
+      port: 0,
+      fetch(req: Request): Response {
+        const url = new URL(req.url);
 
-    const mockCard: AgentCard = {
-      name: 'test-agent',
-      description: 'A test agent',
-      url: 'https://agent.example.com',
-      version: '1.0.0',
-      defaultInputModes: ['text'],
-      defaultOutputModes: ['text'],
-      capabilities: { streaming: false, pushNotifications: false },
-      skills: [],
-    };
-
-    servers.push(
-      Bun.serve({
-        port,
-        fetch(req) {
-          const url = new URL(req.url);
-
-          // Handle resolve: /agents/{handle} (URL encoded)
-          if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
-            const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
-            if (handle === '@org/agent') {
-              return new Response(
-                JSON.stringify({
-                  agent_id: 'agent-1',
-                  agent_name: '@org/agent',
-                  primary_facts_url: `http://localhost:${port}/facts.json`,
-                  // No adaptive_resolver_url
-                }),
-                { headers: { 'Content-Type': 'application/json' } }
-              );
-            }
+        // Handle resolve: /agents/{handle} (URL encoded)
+        if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
+          const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
+          if (handle === '@org/agent') {
+            return new Response(
+              JSON.stringify({
+                agent_id: 'agent-1',
+                agent_name: '@org/agent',
+                primary_facts_url: `http://localhost:${server.port}/facts.json`,
+                // No adaptive_resolver_url
+              }),
+              { headers: { 'Content-Type': 'application/json' } }
+            );
           }
+        }
 
-          if (url.pathname === '/.well-known/agent.json') {
-            return new Response(JSON.stringify(mockCard), {
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
+        if (url.pathname === '/.well-known/agent.json') {
+          const mockCard: AgentCard = {
+            name: 'test-agent',
+            description: 'A test agent',
+            url: 'https://agent.example.com',
+            version: '1.0.0',
+            defaultInputModes: ['text'],
+            defaultOutputModes: ['text'],
+            capabilities: { streaming: false, pushNotifications: false },
+            skills: [],
+          };
+          return new Response(JSON.stringify(mockCard), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-          return new Response('Not Found', { status: 404 });
-        },
-      })
-    );
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
@@ -610,37 +618,34 @@ describe('QuiltResolver.resolve with AgentCard', () => {
   });
 
   it('should handle missing AgentCard gracefully', async () => {
-    const port = getRandomPort();
+    const server = Bun.serve({
+      port: 0,
+      fetch(req: Request): Response {
+        const url = new URL(req.url);
 
-    servers.push(
-      Bun.serve({
-        port,
-        fetch(req) {
-          const url = new URL(req.url);
-
-          // Handle resolve: /agents/{handle} (URL encoded)
-          if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
-            const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
-            if (handle === '@org/agent') {
-              return new Response(
-                JSON.stringify({
-                  agent_id: 'agent-1',
-                  agent_name: '@org/agent',
-                  primary_facts_url: `http://localhost:${port}/facts.json`,
-                }),
-                { headers: { 'Content-Type': 'application/json' } }
-              );
-            }
+        // Handle resolve: /agents/{handle} (URL encoded)
+        if (url.pathname.startsWith('/agents/') && !url.pathname.includes('search')) {
+          const handle = decodeURIComponent(url.pathname.slice('/agents/'.length));
+          if (handle === '@org/agent') {
+            return new Response(
+              JSON.stringify({
+                agent_id: 'agent-1',
+                agent_name: '@org/agent',
+                primary_facts_url: `http://localhost:${server.port}/facts.json`,
+              }),
+              { headers: { 'Content-Type': 'application/json' } }
+            );
           }
+        }
 
-          // No agent.json endpoint - return 404
-          return new Response('Not Found', { status: 404 });
-        },
-      })
-    );
+        // No agent.json endpoint - return 404
+        return new Response('Not Found', { status: 404 });
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const result = await resolver.resolve('@org/agent');
@@ -661,24 +666,22 @@ describe('QuiltResolver.search', () => {
   });
 
   it('should search across single registry', async () => {
-    const port = getRandomPort();
-    servers.push(
-      createMockRegistry(port, {
-        '@org/agent1': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent1',
-          primary_facts_url: `http://localhost:${port}/facts1.json`,
-        },
-        '@org/agent2': {
-          agent_id: 'agent-2',
-          agent_name: '@org/agent2',
-          primary_facts_url: `http://localhost:${port}/facts2.json`,
-        },
-      })
-    );
+    const server = createMockRegistry({
+      '@org/agent1': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent1',
+        primary_facts_url: 'http://example.com/facts1.json',
+      },
+      '@org/agent2': {
+        agent_id: 'agent-2',
+        agent_name: '@org/agent2',
+        primary_facts_url: 'http://example.com/facts2.json',
+      },
+    });
+    servers.push(server);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${server.port}` }],
     });
 
     const results = await resolver.search({ query: 'agent' });
@@ -687,34 +690,29 @@ describe('QuiltResolver.search', () => {
   });
 
   it('should deduplicate agents across registries', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // Both registries have the same agent (by agent_id)
-    servers.push(
-      createMockRegistry(port1, {
-        '@org/agent': {
-          agent_id: 'shared-agent-id',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port1}/facts.json`,
-        },
-      })
-    );
+    const server1 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'shared-agent-id',
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server1);
 
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'shared-agent-id', // Same ID
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'shared-agent-id', // Same ID
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${server1.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
     });
 
@@ -725,33 +723,28 @@ describe('QuiltResolver.search', () => {
   });
 
   it('should combine unique agents from multiple registries', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
+    const server1 = createMockRegistry({
+      '@org/agent1': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent1',
+        primary_facts_url: 'http://example.com/facts1.json',
+      },
+    });
+    servers.push(server1);
 
-    servers.push(
-      createMockRegistry(port1, {
-        '@org/agent1': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent1',
-          primary_facts_url: `http://localhost:${port1}/facts1.json`,
-        },
-      })
-    );
-
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent2': {
-          agent_id: 'agent-2',
-          agent_name: '@org/agent2',
-          primary_facts_url: `http://localhost:${port2}/facts2.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent2': {
+        agent_id: 'agent-2',
+        agent_name: '@org/agent2',
+        primary_facts_url: 'http://example.com/facts2.json',
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${server1.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
     });
 
@@ -762,34 +755,29 @@ describe('QuiltResolver.search', () => {
   });
 
   it('should handle registry errors gracefully', async () => {
-    const port1 = getRandomPort();
-    const port2 = getRandomPort();
-
     // First registry errors
-    servers.push(
-      Bun.serve({
-        port: port1,
-        fetch() {
-          return new Response('Error', { status: 500 });
-        },
-      })
-    );
+    const errorServer = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('Error', { status: 500 });
+      },
+    });
+    servers.push(errorServer);
 
     // Second registry works
-    servers.push(
-      createMockRegistry(port2, {
-        '@org/agent': {
-          agent_id: 'agent-1',
-          agent_name: '@org/agent',
-          primary_facts_url: `http://localhost:${port2}/facts.json`,
-        },
-      })
-    );
+    const server2 = createMockRegistry({
+      '@org/agent': {
+        agent_id: 'agent-1',
+        agent_name: '@org/agent',
+        primary_facts_url: 'http://example.com/facts.json',
+      },
+    });
+    servers.push(server2);
 
     resolver = new QuiltResolver({
       registries: [
-        { baseUrl: `http://localhost:${port1}` },
-        { baseUrl: `http://localhost:${port2}` },
+        { baseUrl: `http://localhost:${errorServer.port}` },
+        { baseUrl: `http://localhost:${server2.port}` },
       ],
     });
 
@@ -800,19 +788,16 @@ describe('QuiltResolver.search', () => {
   });
 
   it('should return empty array when all registries fail', async () => {
-    const port = getRandomPort();
-
-    servers.push(
-      Bun.serve({
-        port,
-        fetch() {
-          return new Response('Error', { status: 500 });
-        },
-      })
-    );
+    const errorServer = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('Error', { status: 500 });
+      },
+    });
+    servers.push(errorServer);
 
     resolver = new QuiltResolver({
-      registries: [{ baseUrl: `http://localhost:${port}` }],
+      registries: [{ baseUrl: `http://localhost:${errorServer.port}` }],
     });
 
     const results = await resolver.search({});

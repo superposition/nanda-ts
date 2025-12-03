@@ -1,31 +1,31 @@
 /**
- * A2AClient Unit Tests
+ * A2AClient Integration Tests
  *
- * Tests for the A2A protocol client.
+ * Tests for the A2A protocol client with real servers.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { A2AClient } from '../../src/protocols/a2a/A2AClient';
 import { AgentServer } from '../../src/server/AgentServer';
 
-// Helper to get a random available port
-function getRandomPort(): number {
-  return 30000 + Math.floor(Math.random() * 10000);
+// Helper to get port from AgentServer after start
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
 }
 
-describe('A2AClient Unit Tests', () => {
+describe('A2AClient Integration Tests', () => {
   let server: AgentServer;
   let client: A2AClient;
   let port: number;
 
   beforeEach(async () => {
-    port = getRandomPort();
     server = new AgentServer({
       name: 'test-agent',
       description: 'Test agent for client tests',
       version: '1.0.0',
       provider: { organization: 'Test' },
-      port,
+      port: 0, // OS assigns port
       skills: [
         {
           id: 'echo',
@@ -42,7 +42,6 @@ describe('A2AClient Unit Tests', () => {
       const textPart = params.message.parts.find((p) => p.type === 'text');
       const text = textPart?.type === 'text' ? textPart.text : '';
 
-      // Use ctx.createTask to properly store the task
       const task = ctx.createTask(
         {
           role: 'agent',
@@ -55,6 +54,7 @@ describe('A2AClient Unit Tests', () => {
     });
 
     await server.start();
+    port = getServerPort(server);
     client = new A2AClient({ agentUrl: `http://localhost:${port}` });
   });
 
@@ -100,7 +100,6 @@ describe('A2AClient Unit Tests', () => {
         timeout: 100,
       });
 
-      // Should not timeout for fast responses
       const task = await timeoutClient.sendMessage({
         message: {
           role: 'user',
@@ -123,7 +122,6 @@ describe('A2AClient Unit Tests', () => {
         ids.add(task.id);
       }
 
-      // All IDs should be unique
       expect(ids.size).toBe(10);
     });
   });
@@ -137,14 +135,12 @@ describe('A2AClient Unit Tests', () => {
         },
       });
 
-      // Use get (convenience method that takes just the id string)
       const retrieved = await client.get(created.id);
       expect(retrieved.id).toBe(created.id);
       expect(retrieved.state).toBe(created.state);
     });
 
     it('should list tasks', async () => {
-      // Create a few tasks
       await client.sendMessage({
         message: {
           role: 'user',
@@ -159,7 +155,6 @@ describe('A2AClient Unit Tests', () => {
         },
       });
 
-      // listTasks returns { tasks: Task[], total, hasMore }
       const response = await client.listTasks();
       expect(response.tasks.length).toBeGreaterThanOrEqual(2);
     });
@@ -197,12 +192,11 @@ describe('A2AClient Streaming', () => {
   let port: number;
 
   beforeEach(async () => {
-    port = getRandomPort();
     server = new AgentServer({
       name: 'streaming-agent',
       description: 'Agent for streaming tests',
       version: '1.0.0',
-      port,
+      port: 0,
       skills: [],
     });
 
@@ -210,13 +204,11 @@ describe('A2AClient Streaming', () => {
       const textPart = params.message.parts.find((p) => p.type === 'text');
       const text = textPart?.type === 'text' ? textPart.text : '';
 
-      // Create task for streaming
       const task = ctx.createTask(
         { role: 'agent', parts: [{ type: 'text', text: `Streamed: ${text}` }] },
         params.contextId
       );
 
-      // If emit is available (streaming mode), emit progress updates
       if (ctx.emit) {
         await ctx.emit({
           type: 'task_update',
@@ -231,6 +223,7 @@ describe('A2AClient Streaming', () => {
     });
 
     await server.start();
+    port = getServerPort(server);
     client = new A2AClient({ agentUrl: `http://localhost:${port}` });
   });
 
@@ -252,7 +245,6 @@ describe('A2AClient Streaming', () => {
       }
 
       expect(updates.length).toBeGreaterThanOrEqual(1);
-      // Last update should be the final result
       const lastUpdate = updates[updates.length - 1] as { result?: { state: string }; done?: boolean };
       expect(lastUpdate.done).toBe(true);
       expect(lastUpdate.result?.state).toBe('COMPLETED');
@@ -270,10 +262,8 @@ describe('A2AClient Streaming', () => {
         updates.push(update);
       }
 
-      // Should have at least the progress update and the final result
       expect(updates.length).toBeGreaterThanOrEqual(2);
 
-      // Check for progress update
       const progressUpdate = updates.find(
         (u) => (u as { type?: string }).type === 'task_update'
       ) as { state: string; progress: number } | undefined;
@@ -285,16 +275,13 @@ describe('A2AClient Streaming', () => {
     it('should set streaming configuration', async () => {
       let receivedConfig: unknown;
 
-      // Create a custom server to inspect the request
-      const inspectPort = getRandomPort();
       const inspectServer = Bun.serve({
-        port: inspectPort,
+        port: 0,
         async fetch(req) {
           if (req.method === 'POST') {
             const body = await req.json() as { params?: { configuration?: unknown } };
             receivedConfig = body.params?.configuration;
 
-            // Return SSE response
             const encoder = new TextEncoder();
             const stream = new ReadableStream({
               start(controller) {
@@ -311,7 +298,7 @@ describe('A2AClient Streaming', () => {
         },
       });
 
-      const inspectClient = new A2AClient({ agentUrl: `http://localhost:${inspectPort}` });
+      const inspectClient = new A2AClient({ agentUrl: `http://localhost:${inspectServer.port}` });
 
       try {
         for await (const _ of inspectClient.sendMessageStream({
@@ -347,7 +334,6 @@ describe('A2AClient Streaming', () => {
         updates.push(update);
       }
 
-      // Final result should have the context
       const lastUpdate = updates[updates.length - 1] as { result?: { contextId?: string } };
       expect(lastUpdate.result?.contextId).toBe(contextId);
     });
@@ -355,15 +341,12 @@ describe('A2AClient Streaming', () => {
 
   describe('subscribeToTask', () => {
     it('should subscribe to task updates', async () => {
-      // First create a task
       const task = await client.send('Create task for subscription');
 
-      // Set up streaming subscription server
-      const subPort = getRandomPort();
       let subscribedTaskId: string | null = null;
 
       const subServer = Bun.serve({
-        port: subPort,
+        port: 0,
         async fetch(req) {
           if (req.method === 'POST') {
             const body = await req.json() as { params?: { taskId?: string } };
@@ -394,7 +377,7 @@ describe('A2AClient Streaming', () => {
         },
       });
 
-      const subClient = new A2AClient({ agentUrl: `http://localhost:${subPort}` });
+      const subClient = new A2AClient({ agentUrl: `http://localhost:${subServer.port}` });
 
       try {
         const updates: Array<{ type: string; taskId: string; state: string }> = [];
@@ -414,15 +397,14 @@ describe('A2AClient Streaming', () => {
 
   describe('streaming error handling', () => {
     it('should throw on non-OK response', async () => {
-      const errorPort = getRandomPort();
       const errorServer = Bun.serve({
-        port: errorPort,
+        port: 0,
         fetch() {
           return new Response('Service Unavailable', { status: 503 });
         },
       });
 
-      const errorClient = new A2AClient({ agentUrl: `http://localhost:${errorPort}` });
+      const errorClient = new A2AClient({ agentUrl: `http://localhost:${errorServer.port}` });
 
       try {
         for await (const _ of errorClient.sendMessageStream({
@@ -439,12 +421,9 @@ describe('A2AClient Streaming', () => {
     });
 
     it('should throw when no response body', async () => {
-      const noBodyPort = getRandomPort();
       const noBodyServer = Bun.serve({
-        port: noBodyPort,
+        port: 0,
         fetch() {
-          // Create response with null body (this is tricky in Bun)
-          // We'll simulate by returning an empty stream that closes immediately
           return new Response(null, {
             status: 200,
             headers: { 'Content-Type': 'text/event-stream' },
@@ -452,7 +431,7 @@ describe('A2AClient Streaming', () => {
         },
       });
 
-      const noBodyClient = new A2AClient({ agentUrl: `http://localhost:${noBodyPort}` });
+      const noBodyClient = new A2AClient({ agentUrl: `http://localhost:${noBodyServer.port}` });
 
       try {
         for await (const _ of noBodyClient.sendMessageStream({
@@ -460,7 +439,6 @@ describe('A2AClient Streaming', () => {
         })) {
           // Should either throw or yield nothing
         }
-        // If we reach here without error, the stream was empty which is also valid
       } catch (error) {
         expect((error as Error).message).toContain('No response body');
       } finally {
@@ -469,15 +447,14 @@ describe('A2AClient Streaming', () => {
     });
 
     it('should handle subscribeToTask errors', async () => {
-      const subErrorPort = getRandomPort();
       const subErrorServer = Bun.serve({
-        port: subErrorPort,
+        port: 0,
         fetch() {
           return new Response('Not Found', { status: 404 });
         },
       });
 
-      const subErrorClient = new A2AClient({ agentUrl: `http://localhost:${subErrorPort}` });
+      const subErrorClient = new A2AClient({ agentUrl: `http://localhost:${subErrorServer.port}` });
 
       try {
         for await (const _ of subErrorClient.subscribeToTask('non-existent')) {
@@ -496,23 +473,21 @@ describe('A2AClient Streaming', () => {
 describe('A2AClient additional coverage', () => {
   it('should use default timeout of 30000ms', () => {
     const client = new A2AClient({ agentUrl: 'http://localhost:3000' });
-    // Default is applied internally; client should work
     expect(client.url).toBe('http://localhost:3000');
   });
 
   it('should use default empty headers', async () => {
-    const port = getRandomPort();
     let receivedHeaders: Headers | null = null;
 
     const server = Bun.serve({
-      port,
+      port: 0,
       fetch(req) {
         receivedHeaders = req.headers;
         return Response.json({
           name: 'test',
           description: 'Test agent',
           version: '1.0.0',
-          url: `http://localhost:${port}`,
+          url: `http://localhost:${server.port}`,
           skills: [],
           defaultInputModes: ['text'],
           defaultOutputModes: ['text'],
@@ -521,11 +496,10 @@ describe('A2AClient additional coverage', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${server.port}` });
 
     try {
       await client.discover();
-      // Just verify the request went through with defaults
       expect(receivedHeaders).toBeDefined();
     } finally {
       server.stop();
@@ -533,18 +507,17 @@ describe('A2AClient additional coverage', () => {
   });
 
   it('should apply custom headers to requests', async () => {
-    const port = getRandomPort();
     let receivedHeaders: Headers | null = null;
 
     const server = Bun.serve({
-      port,
+      port: 0,
       fetch(req) {
         receivedHeaders = req.headers;
         return Response.json({
           name: 'test',
           description: 'Test agent',
           version: '1.0.0',
-          url: `http://localhost:${port}`,
+          url: `http://localhost:${server.port}`,
           skills: [],
           defaultInputModes: ['text'],
           defaultOutputModes: ['text'],
@@ -554,7 +527,7 @@ describe('A2AClient additional coverage', () => {
     });
 
     const client = new A2AClient({
-      agentUrl: `http://localhost:${port}`,
+      agentUrl: `http://localhost:${server.port}`,
       headers: { 'X-Custom-Header': 'custom-value' },
     });
 
@@ -572,15 +545,14 @@ describe('A2AClient additional coverage', () => {
   });
 
   it('should return agent card after discover', async () => {
-    const port = getRandomPort();
     const server = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return Response.json({
           name: 'test-agent',
           description: 'Test agent',
           version: '1.0.0',
-          url: `http://localhost:${port}`,
+          url: `http://localhost:${server.port}`,
           skills: [],
           defaultInputModes: ['text'],
           defaultOutputModes: ['text'],
@@ -589,7 +561,7 @@ describe('A2AClient additional coverage', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${server.port}` });
 
     try {
       await client.discover();
@@ -602,11 +574,10 @@ describe('A2AClient additional coverage', () => {
   });
 
   it('should send convenience method', async () => {
-    const port = getRandomPort();
     let receivedMessage: unknown;
 
     const server = Bun.serve({
-      port,
+      port: 0,
       async fetch(req) {
         const body = await req.json() as { params?: { message?: unknown } };
         receivedMessage = body.params?.message;
@@ -618,7 +589,7 @@ describe('A2AClient additional coverage', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${server.port}` });
 
     try {
       const task = await client.send('Hello', 'my-context');
@@ -630,11 +601,10 @@ describe('A2AClient additional coverage', () => {
   });
 
   it('should cancel convenience method', async () => {
-    const port = getRandomPort();
     let receivedTaskId: string | undefined;
 
     const server = Bun.serve({
-      port,
+      port: 0,
       async fetch(req) {
         const body = await req.json() as { params?: { taskId?: string } };
         receivedTaskId = body.params?.taskId;
@@ -646,7 +616,7 @@ describe('A2AClient additional coverage', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${server.port}` });
 
     try {
       const task = await client.cancel('task-to-cancel');
@@ -663,15 +633,14 @@ describe('A2AClient additional coverage', () => {
   });
 
   it('should clear agent card on close', async () => {
-    const port = getRandomPort();
     const server = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return Response.json({
           name: 'test',
           description: 'Test agent',
           version: '1.0.0',
-          url: `http://localhost:${port}`,
+          url: `http://localhost:${server.port}`,
           skills: [],
           defaultInputModes: ['text'],
           defaultOutputModes: ['text'],
@@ -680,7 +649,7 @@ describe('A2AClient additional coverage', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${server.port}` });
 
     try {
       await client.discover();
@@ -696,11 +665,8 @@ describe('A2AClient additional coverage', () => {
 
 describe('A2AClient Edge Cases', () => {
   it('should handle malformed responses', async () => {
-    const port = getRandomPort();
-
-    // Create a raw server that returns invalid JSON-RPC
     const badServer = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return new Response(JSON.stringify({ invalid: 'response' }), {
           headers: { 'Content-Type': 'application/json' },
@@ -708,7 +674,7 @@ describe('A2AClient Edge Cases', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${badServer.port}` });
 
     try {
       await expect(client.discover()).rejects.toThrow();
@@ -718,16 +684,14 @@ describe('A2AClient Edge Cases', () => {
   });
 
   it('should handle empty responses', async () => {
-    const port = getRandomPort();
-
     const emptyServer = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return new Response('', { status: 204 });
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${emptyServer.port}` });
 
     try {
       await expect(client.discover()).rejects.toThrow();
@@ -737,19 +701,16 @@ describe('A2AClient Edge Cases', () => {
   });
 
   it('should handle timeout on discovery', async () => {
-    const port = getRandomPort();
-
     const slowServer = Bun.serve({
-      port,
+      port: 0,
       async fetch() {
-        // Wait longer than the timeout
         await new Promise((r) => setTimeout(r, 500));
         return Response.json({ name: 'slow', version: '1.0.0', url: '', skills: [] });
       },
     });
 
     const client = new A2AClient({
-      agentUrl: `http://localhost:${port}`,
+      agentUrl: `http://localhost:${slowServer.port}`,
       timeout: 100,
     });
 
@@ -761,10 +722,8 @@ describe('A2AClient Edge Cases', () => {
   });
 
   it('should handle timeout on RPC', async () => {
-    const port = getRandomPort();
-
     const slowServer = Bun.serve({
-      port,
+      port: 0,
       async fetch() {
         await new Promise((r) => setTimeout(r, 500));
         return Response.json({ jsonrpc: '2.0', result: {}, id: 1 });
@@ -772,7 +731,7 @@ describe('A2AClient Edge Cases', () => {
     });
 
     const client = new A2AClient({
-      agentUrl: `http://localhost:${port}`,
+      agentUrl: `http://localhost:${slowServer.port}`,
       timeout: 100,
     });
 
@@ -788,10 +747,8 @@ describe('A2AClient Edge Cases', () => {
   });
 
   it('should handle JSON-RPC error response', async () => {
-    const port = getRandomPort();
-
     const errorServer = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return Response.json({
           jsonrpc: '2.0',
@@ -805,7 +762,7 @@ describe('A2AClient Edge Cases', () => {
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${errorServer.port}` });
 
     try {
       await expect(
@@ -829,16 +786,14 @@ describe('A2AClient Edge Cases', () => {
   });
 
   it('should handle non-OK HTTP response on RPC', async () => {
-    const port = getRandomPort();
-
     const errorServer = Bun.serve({
-      port,
+      port: 0,
       fetch() {
         return new Response('Internal Server Error', { status: 500 });
       },
     });
 
-    const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+    const client = new A2AClient({ agentUrl: `http://localhost:${errorServer.port}` });
 
     try {
       await expect(
@@ -851,3 +806,9 @@ describe('A2AClient Edge Cases', () => {
     }
   });
 });
+
+// Helper function used by tests
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
+}

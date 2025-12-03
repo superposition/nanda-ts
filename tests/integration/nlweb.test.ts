@@ -13,11 +13,6 @@ import {
   type NLWebResponseItem,
 } from '../../src/protocols/nlweb/NLWebClient';
 
-// Helper to get random port
-function getRandomPort(): number {
-  return 40000 + Math.floor(Math.random() * 10000);
-}
-
 describe('NLWebClient', () => {
   describe('constructor', () => {
     it('should create client with baseUrl', () => {
@@ -50,7 +45,6 @@ describe('NLWebClient', () => {
 
 describe('NLWebClient.discover', () => {
   let server: ReturnType<typeof Bun.serve>;
-  let port: number;
   let client: NLWebClient;
 
   const mockManifest: NLWebManifest = {
@@ -66,10 +60,9 @@ describe('NLWebClient.discover', () => {
   });
 
   it('should fetch and parse manifest', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
         if (url.pathname === '/.well-known/nlweb.json') {
           return new Response(JSON.stringify(mockManifest), {
@@ -80,7 +73,7 @@ describe('NLWebClient.discover', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
     const manifest = await client.discover();
 
     expect(manifest.name).toBe('Test NLWeb Service');
@@ -89,10 +82,9 @@ describe('NLWebClient.discover', () => {
   });
 
   it('should cache manifest after discovery', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
         if (url.pathname === '/.well-known/nlweb.json') {
           return new Response(JSON.stringify(mockManifest), {
@@ -103,7 +95,7 @@ describe('NLWebClient.discover', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     expect(client.getManifest()).toBeNull();
     await client.discover();
@@ -112,29 +104,27 @@ describe('NLWebClient.discover', () => {
   });
 
   it('should throw on 404', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('Not Found', { status: 404 });
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     await expect(client.discover()).rejects.toThrow('Failed to fetch NLWeb manifest: 404');
   });
 
   it('should throw on 500', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('Internal Error', { status: 500 });
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     await expect(client.discover()).rejects.toThrow('Failed to fetch NLWeb manifest: 500');
   });
@@ -148,7 +138,6 @@ describe('NLWebClient.discover', () => {
 
 describe('NLWebClient.ask', () => {
   let server: ReturnType<typeof Bun.serve>;
-  let port: number;
   let client: NLWebClient;
 
   const mockResponse: NLWebResponse = {
@@ -172,10 +161,9 @@ describe('NLWebClient.ask', () => {
   });
 
   it('should send query and receive response', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      async fetch(req) {
+      port: 0,
+      async fetch(req: Request): Promise<Response> {
         if (req.method === 'POST') {
           const body = await req.json();
           expect(body.query).toBe('What products do you have?');
@@ -188,7 +176,7 @@ describe('NLWebClient.ask', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
     const response = await client.ask('What products do you have?');
 
     expect(response['@type']).toBe('SearchResultsPage');
@@ -197,20 +185,18 @@ describe('NLWebClient.ask', () => {
   });
 
   it('should use manifest endpoint after discovery', async () => {
-    port = getRandomPort();
-    const apiPort = getRandomPort();
     let usedEndpoint = '';
 
     // Main server with manifest
     server = Bun.serve({
-      port,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
         if (url.pathname === '/.well-known/nlweb.json') {
           return new Response(
             JSON.stringify({
               name: 'Test',
-              endpoint: `http://localhost:${apiPort}/api/query`,
+              endpoint: `http://localhost:${apiServer.port}/api/query`,
             }),
             { headers: { 'Content-Type': 'application/json' } }
           );
@@ -221,8 +207,8 @@ describe('NLWebClient.ask', () => {
 
     // API server
     const apiServer = Bun.serve({
-      port: apiPort,
-      async fetch(req) {
+      port: 0,
+      async fetch(req: Request): Promise<Response> {
         usedEndpoint = new URL(req.url).pathname;
         return new Response(JSON.stringify(mockResponse), {
           headers: { 'Content-Type': 'application/json' },
@@ -231,7 +217,7 @@ describe('NLWebClient.ask', () => {
     });
 
     try {
-      client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+      client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
       await client.discover();
       await client.ask('test query');
 
@@ -242,12 +228,11 @@ describe('NLWebClient.ask', () => {
   });
 
   it('should use baseUrl when no manifest', async () => {
-    port = getRandomPort();
     let receivedRequest = false;
 
     server = Bun.serve({
-      port,
-      async fetch(req) {
+      port: 0,
+      async fetch(): Promise<Response> {
         receivedRequest = true;
         return new Response(JSON.stringify(mockResponse), {
           headers: { 'Content-Type': 'application/json' },
@@ -255,36 +240,34 @@ describe('NLWebClient.ask', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
     await client.ask('test');
 
     expect(receivedRequest).toBe(true);
   });
 
   it('should throw on error response', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('Bad Request', { status: 400 });
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     await expect(client.ask('test')).rejects.toThrow('NLWeb query failed: 400');
   });
 
   it('should throw on 500 error', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('Server Error', { status: 500 });
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     await expect(client.ask('test')).rejects.toThrow('NLWeb query failed: 500');
   });
@@ -292,7 +275,6 @@ describe('NLWebClient.ask', () => {
 
 describe('NLWebClient.askStream', () => {
   let server: ReturnType<typeof Bun.serve>;
-  let port: number;
   let client: NLWebClient;
 
   afterEach(() => {
@@ -300,10 +282,9 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should stream response items', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      async fetch(req) {
+      port: 0,
+      async fetch(req: Request): Promise<Response> {
         const body = await req.json();
         expect(body.stream).toBe(true);
 
@@ -324,7 +305,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     const items: NLWebResponseItem[] = [];
     for await (const item of client.askStream('stream test')) {
@@ -338,10 +319,9 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should stop on [DONE] message', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
           start(controller) {
@@ -358,7 +338,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     const items: NLWebResponseItem[] = [];
     for await (const item of client.askStream('test')) {
@@ -370,10 +350,9 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should skip invalid JSON in stream', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
           start(controller) {
@@ -390,7 +369,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     const items: NLWebResponseItem[] = [];
     for await (const item of client.askStream('test')) {
@@ -403,15 +382,14 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should throw on error response', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         return new Response('Bad Request', { status: 400 });
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     try {
       for await (const _ of client.askStream('test')) {
@@ -428,10 +406,9 @@ describe('NLWebClient.askStream', () => {
   // with non-standard HTTP implementations.
 
   it('should handle chunked SSE data', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
           async start(controller) {
@@ -449,7 +426,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     const items: NLWebResponseItem[] = [];
     for await (const item of client.askStream('test')) {
@@ -461,10 +438,9 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should handle empty stream', async () => {
-    port = getRandomPort();
     server = Bun.serve({
-      port,
-      fetch() {
+      port: 0,
+      fetch(): Response {
         const stream = new ReadableStream({
           start(controller) {
             controller.close();
@@ -477,7 +453,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     const items: NLWebResponseItem[] = [];
     for await (const item of client.askStream('test')) {
@@ -488,12 +464,11 @@ describe('NLWebClient.askStream', () => {
   });
 
   it('should send correct headers', async () => {
-    port = getRandomPort();
     let receivedHeaders: Headers | null = null;
 
     server = Bun.serve({
-      port,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         receivedHeaders = req.headers;
         const stream = new ReadableStream({
           start(controller) {
@@ -506,7 +481,7 @@ describe('NLWebClient.askStream', () => {
       },
     });
 
-    client = new NLWebClient({ baseUrl: `http://localhost:${port}` });
+    client = new NLWebClient({ baseUrl: `http://localhost:${server.port}` });
 
     for await (const _ of client.askStream('test')) {
       // consume
@@ -524,14 +499,13 @@ describe('createNLWebClient', () => {
   });
 
   it('should work the same as constructor', async () => {
-    const port = getRandomPort();
     const server = Bun.serve({
-      port,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
         if (url.pathname === '/.well-known/nlweb.json') {
           return new Response(
-            JSON.stringify({ name: 'Test', endpoint: `http://localhost:${port}` }),
+            JSON.stringify({ name: 'Test', endpoint: `http://localhost:${server.port}` }),
             { headers: { 'Content-Type': 'application/json' } }
           );
         }
@@ -540,7 +514,7 @@ describe('createNLWebClient', () => {
     });
 
     try {
-      const client = createNLWebClient(`http://localhost:${port}`);
+      const client = createNLWebClient(`http://localhost:${server.port}`);
       const manifest = await client.discover();
       expect(manifest.name).toBe('Test');
     } finally {

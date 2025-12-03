@@ -8,18 +8,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { AgentServer } from '../../src/server/AgentServer';
 import { A2AClient } from '../../src/protocols/a2a/A2AClient';
 
-// Helper to get a random available port
-function getRandomPort(): number {
-  return 40000 + Math.floor(Math.random() * 10000);
+// Helper to get port from AgentServer after start
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
 }
 
 describe('Discovery Module Tests', () => {
   let server: AgentServer;
   let port: number;
-
-  beforeEach(() => {
-    port = getRandomPort();
-  });
 
   afterEach(async () => {
     if (server) {
@@ -34,7 +31,7 @@ describe('Discovery Module Tests', () => {
         description: 'An agent to discover',
         version: '1.0.0',
         provider: { organization: 'Discovery Test' },
-        port,
+        port: 0,
         skills: [
           {
             id: 'search',
@@ -48,6 +45,7 @@ describe('Discovery Module Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
       const card = await client.discover();
@@ -75,7 +73,7 @@ describe('Discovery Module Tests', () => {
         description: 'Agent with multiple skills',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [
           {
             id: 'translate',
@@ -97,6 +95,7 @@ describe('Discovery Module Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
       const card = await client.discover();
@@ -126,11 +125,12 @@ describe('Discovery Module Tests', () => {
           organization: 'Metadata Corp',
           url: 'https://metadata.example.com',
         },
-        port,
+        port: 0,
         skills: [],
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
       const card = await client.discover();
@@ -146,7 +146,7 @@ describe('Discovery Module Tests', () => {
         description: 'Agent with specific capabilities',
         version: '1.0.0',
         provider: { organization: 'Test' },
-        port,
+        port: 0,
         skills: [],
         capabilities: {
           streaming: true,
@@ -156,6 +156,7 @@ describe('Discovery Module Tests', () => {
       });
 
       await server.start();
+      port = getServerPort(server);
 
       const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
       const card = await client.discover();
@@ -170,8 +171,8 @@ describe('Discovery Module Tests', () => {
     it('should handle 404 from agent card URL', async () => {
       // Create a server without the well-known endpoint
       const badServer = Bun.serve({
-        port,
-        fetch(req) {
+        port: 0,
+        fetch(req: Request): Response {
           const url = new URL(req.url);
           if (url.pathname === '/.well-known/agent.json') {
             return new Response('Not Found', { status: 404 });
@@ -180,7 +181,7 @@ describe('Discovery Module Tests', () => {
         },
       });
 
-      const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+      const client = new A2AClient({ agentUrl: `http://localhost:${badServer.port}` });
 
       try {
         await expect(client.discover()).rejects.toThrow();
@@ -191,8 +192,8 @@ describe('Discovery Module Tests', () => {
 
     it('should handle invalid JSON in agent card', async () => {
       const badServer = Bun.serve({
-        port,
-        fetch(req) {
+        port: 0,
+        fetch(req: Request): Response {
           const url = new URL(req.url);
           if (url.pathname === '/.well-known/agent.json') {
             return new Response('{ invalid json }', {
@@ -203,7 +204,7 @@ describe('Discovery Module Tests', () => {
         },
       });
 
-      const client = new A2AClient({ agentUrl: `http://localhost:${port}` });
+      const client = new A2AClient({ agentUrl: `http://localhost:${badServer.port}` });
 
       try {
         await expect(client.discover()).rejects.toThrow();

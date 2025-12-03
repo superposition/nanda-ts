@@ -13,9 +13,10 @@ import {
 import { AgentServer } from '../../src/server/AgentServer';
 import { DiscoveryError } from '../../src/types';
 
-// Helper to get random port
-function getRandomPort(): number {
-  return 40000 + Math.floor(Math.random() * 10000);
+// Helper to get port from AgentServer after start
+function getServerPort(server: AgentServer): number {
+  const url = new URL(server.getAgentCard().url);
+  return parseInt(url.port, 10);
 }
 
 describe('NandaClient', () => {
@@ -95,12 +96,11 @@ describe('NandaClient.connect with URL', () => {
   let port: number;
 
   beforeEach(async () => {
-    port = getRandomPort();
     server = new AgentServer({
       name: 'test-agent',
       description: 'Test agent for NandaClient',
       version: '1.0.0',
-      port,
+      port: 0,
       skills: [
         {
           id: 'echo',
@@ -124,6 +124,7 @@ describe('NandaClient.connect with URL', () => {
     });
 
     await server.start();
+    port = getServerPort(server);
     client = new NandaClient({ timeout: 5000 });
   });
 
@@ -159,12 +160,11 @@ describe('AgentConnection', () => {
   let port: number;
 
   beforeEach(async () => {
-    port = getRandomPort();
     server = new AgentServer({
       name: 'connection-test-agent',
       description: 'Test agent for AgentConnection',
       version: '1.0.0',
-      port,
+      port: 0,
       skills: [
         {
           id: 'test',
@@ -188,6 +188,7 @@ describe('AgentConnection', () => {
     });
 
     await server.start();
+    port = getServerPort(server);
     client = new NandaClient({ timeout: 5000 });
     connection = await client.connect(`http://localhost:${port}`);
   });
@@ -255,17 +256,34 @@ describe('NandaClient with mock registry', () => {
   let registryServer: ReturnType<typeof Bun.serve>;
   let agentServer: AgentServer;
   let client: NandaClient;
-  let registryPort: number;
   let agentPort: number;
 
   beforeEach(async () => {
-    registryPort = getRandomPort();
-    agentPort = getRandomPort();
+    // Create agent server first
+    agentServer = new AgentServer({
+      name: 'registry-test-agent',
+      description: 'Agent for registry tests',
+      version: '1.0.0',
+      port: 0,
+      skills: [],
+    });
 
-    // Create mock registry server
+    agentServer.onMessage(async (params, ctx) => {
+      const task = ctx.createTask(
+        { role: 'agent', parts: [{ type: 'text', text: 'OK' }] },
+        params.contextId
+      );
+      ctx.updateTaskState(task.id, 'COMPLETED');
+      return { ...task, state: 'COMPLETED' as const };
+    });
+
+    await agentServer.start();
+    agentPort = getServerPort(agentServer);
+
+    // Create mock registry server with port 0
     registryServer = Bun.serve({
-      port: registryPort,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
 
         // Handle resolve endpoint: GET /agents/{handle}
@@ -318,28 +336,8 @@ describe('NandaClient with mock registry', () => {
       },
     });
 
-    // Create agent server
-    agentServer = new AgentServer({
-      name: 'registry-test-agent',
-      description: 'Agent for registry tests',
-      version: '1.0.0',
-      port: agentPort,
-      skills: [],
-    });
-
-    agentServer.onMessage(async (params, ctx) => {
-      const task = ctx.createTask(
-        { role: 'agent', parts: [{ type: 'text', text: 'OK' }] },
-        params.contextId
-      );
-      ctx.updateTaskState(task.id, 'COMPLETED');
-      return { ...task, state: 'COMPLETED' as const };
-    });
-
-    await agentServer.start();
-
     client = new NandaClient({
-      registryUrl: `http://localhost:${registryPort}`,
+      registryUrl: `http://localhost:${registryServer.port}`,
       timeout: 5000,
     });
   });
@@ -400,17 +398,34 @@ describe('NandaClient.connect with DID', () => {
   let registryServer: ReturnType<typeof Bun.serve>;
   let agentServer: AgentServer;
   let client: NandaClient;
-  let registryPort: number;
   let agentPort: number;
 
   beforeEach(async () => {
-    registryPort = getRandomPort();
-    agentPort = getRandomPort();
+    // Create agent server first
+    agentServer = new AgentServer({
+      name: 'did-test-agent',
+      description: 'Agent for DID tests',
+      version: '1.0.0',
+      port: 0,
+      skills: [],
+    });
+
+    agentServer.onMessage(async (params, ctx) => {
+      const task = ctx.createTask(
+        { role: 'agent', parts: [{ type: 'text', text: 'DID OK' }] },
+        params.contextId
+      );
+      ctx.updateTaskState(task.id, 'COMPLETED');
+      return { ...task, state: 'COMPLETED' as const };
+    });
+
+    await agentServer.start();
+    agentPort = getServerPort(agentServer);
 
     // Create mock registry that resolves DIDs
     registryServer = Bun.serve({
-      port: registryPort,
-      fetch(req) {
+      port: 0,
+      fetch(req: Request): Response {
         const url = new URL(req.url);
 
         // Handle resolve endpoint: GET /agents/{identifier}
@@ -436,28 +451,8 @@ describe('NandaClient.connect with DID', () => {
       },
     });
 
-    // Create agent server
-    agentServer = new AgentServer({
-      name: 'did-test-agent',
-      description: 'Agent for DID tests',
-      version: '1.0.0',
-      port: agentPort,
-      skills: [],
-    });
-
-    agentServer.onMessage(async (params, ctx) => {
-      const task = ctx.createTask(
-        { role: 'agent', parts: [{ type: 'text', text: 'DID OK' }] },
-        params.contextId
-      );
-      ctx.updateTaskState(task.id, 'COMPLETED');
-      return { ...task, state: 'COMPLETED' as const };
-    });
-
-    await agentServer.start();
-
     client = new NandaClient({
-      registryUrl: `http://localhost:${registryPort}`,
+      registryUrl: `http://localhost:${registryServer.port}`,
       timeout: 5000,
     });
   });
