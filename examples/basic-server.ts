@@ -7,12 +7,14 @@
 import { AgentServer } from '../src/server/AgentServer';
 
 async function main() {
+  const port = parseInt(process.env.PORT || '3000');
+
   // Create the agent server
   const server = new AgentServer({
     name: 'echo-agent',
     description: 'A simple echo agent that repeats messages',
     version: '1.0.0',
-    port: 3000,
+    port,
     provider: {
       organization: 'NANDA Examples',
     },
@@ -59,9 +61,9 @@ async function main() {
 Echo Agent is running!
 
 Endpoints:
-  Agent Card: http://localhost:3000/.well-known/agent.json
-  JSON-RPC:   http://localhost:3000/rpc
-  Health:     http://localhost:3000/health
+  Agent Card: http://localhost:${port}/.well-known/agent.json
+  JSON-RPC:   http://localhost:${port}/rpc
+  Health:     http://localhost:${port}/health
 
 Press Ctrl+C to stop.
   `);

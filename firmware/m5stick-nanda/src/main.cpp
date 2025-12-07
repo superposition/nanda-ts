@@ -116,6 +116,19 @@ DiscoveredAgent discoveredAgents[10];
 int discoveredAgentCount = 0;
 unsigned long lastDiscovery = 0;
 
+// Agent skills (for selected agent)
+struct AgentSkill {
+    String id;
+    String name;
+    String description;
+};
+AgentSkill agentSkills[10];
+int agentSkillCount = 0;
+int selectedAgentIndex = -1;
+int selectedSkillIndex = 0;
+bool viewingAgentSkills = false;
+String lastSkillResult = "";
+
 // WebSocket tunnel for external access
 WebSocketsClient webSocket;
 bool tunnelConnected = false;
@@ -480,6 +493,115 @@ void discoverAgents() {
     http.end();
 }
 
+// Fetch skills from an agent's agent card
+void fetchAgentSkills(int agentIndex) {
+    if (agentIndex < 0 || agentIndex >= discoveredAgentCount) return;
+
+    String agentUrl = discoveredAgents[agentIndex].url;
+    HTTPClient http;
+    http.begin(agentUrl + "/.well-known/agent.json");
+    http.setTimeout(5000);
+
+    int httpCode = http.GET();
+    agentSkillCount = 0;
+
+    if (httpCode == 200) {
+        String payload = http.getString();
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, payload);
+
+        if (!error) {
+            JsonArray skills = doc["skills"];
+            for (JsonObject skill : skills) {
+                if (agentSkillCount >= 10) break;
+                agentSkills[agentSkillCount].id = skill["id"] | "";
+                agentSkills[agentSkillCount].name = skill["name"] | "";
+                agentSkills[agentSkillCount].description = skill["description"] | "";
+                agentSkillCount++;
+            }
+            Serial.println("Fetched " + String(agentSkillCount) + " skills from " + discoveredAgents[agentIndex].handle);
+        }
+    } else {
+        Serial.println("Failed to fetch skills: " + String(httpCode));
+    }
+
+    http.end();
+}
+
+// Execute a skill on an agent
+String executeSkill(int agentIndex, int skillIndex) {
+    if (agentIndex < 0 || agentIndex >= discoveredAgentCount) return "Invalid agent";
+    if (skillIndex < 0 || skillIndex >= agentSkillCount) return "Invalid skill";
+
+    String agentUrl = discoveredAgents[agentIndex].url;
+    String skillId = agentSkills[skillIndex].id;
+
+    // Build a natural language command from skill ID
+    String command = skillId;
+    command.replace("/", " ");
+    command.replace("_", " ");
+
+    HTTPClient http;
+    http.begin(agentUrl + "/rpc");
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(10000);
+
+    // Build JSON-RPC request
+    JsonDocument reqDoc;
+    reqDoc["jsonrpc"] = "2.0";
+    reqDoc["id"] = millis();
+    reqDoc["method"] = "message/send";
+
+    JsonObject params = reqDoc["params"].to<JsonObject>();
+    JsonObject message = params["message"].to<JsonObject>();
+    message["role"] = "user";
+
+    JsonArray parts = message["parts"].to<JsonArray>();
+    JsonObject part = parts.add<JsonObject>();
+    part["type"] = "text";
+    part["text"] = command;
+
+    String body;
+    serializeJson(reqDoc, body);
+
+    Serial.println("Executing skill: " + command);
+    Serial.println("Request: " + body);
+
+    int httpCode = http.POST(body);
+    String result = "";
+
+    if (httpCode == 200) {
+        String response = http.getString();
+        Serial.println("Response: " + response.substring(0, 200));
+
+        JsonDocument respDoc;
+        DeserializationError error = deserializeJson(respDoc, response);
+
+        if (!error) {
+            // Extract text from response
+            JsonObject resultObj = respDoc["result"];
+            JsonObject respMessage = resultObj["message"];
+            JsonArray respParts = respMessage["parts"];
+
+            for (JsonObject p : respParts) {
+                if (p["type"] == "text") {
+                    result = p["text"] | "";
+                    break;
+                }
+            }
+        }
+
+        if (result.length() == 0) {
+            result = "OK (no text response)";
+        }
+    } else {
+        result = "Error: " + String(httpCode);
+    }
+
+    http.end();
+    return result;
+}
+
 // ============================================================================
 // Screen Renderers
 // ============================================================================
@@ -657,77 +779,94 @@ void drawBatteryScreen() {
 }
 
 void drawDiscoveryScreen() {
-    drawHeader("Discovery");
+    if (viewingAgentSkills && selectedAgentIndex >= 0) {
+        // Show skills for selected agent
+        drawHeader("Skills");
 
-    M5.Display.setTextSize(1);
-
-    // Beacon status
-    M5.Display.setTextColor(TFT_CYAN);
-    M5.Display.setCursor(10, 32);
-    M5.Display.print("Beacon: ");
-    if (mdnsStarted) {
-        M5.Display.setTextColor(TFT_GREEN);
-        M5.Display.println("Broadcasting");
-    } else {
-        M5.Display.setTextColor(TFT_RED);
-        M5.Display.println("Offline");
-    }
-
-    // Registry status
-    M5.Display.setTextColor(TFT_CYAN);
-    M5.Display.setCursor(10, 45);
-    M5.Display.print("Registry: ");
-    if (registryConnected) {
-        M5.Display.setTextColor(TFT_GREEN);
-        M5.Display.println("Connected");
-    } else {
-        M5.Display.setTextColor(TFT_YELLOW);
-        M5.Display.println("Disconnected");
-    }
-
-    // Discovered agents (including self)
-    int totalAgents = registryConnected ? discoveredAgentCount + 1 : 0;
-    M5.Display.setTextColor(TFT_WHITE);
-    M5.Display.setCursor(10, 62);
-    M5.Display.print("Agents: ");
-    M5.Display.print(totalAgents);
-    if (totalAgents == 1) M5.Display.println(" (just you)");
-    else if (totalAgents > 1) M5.Display.println(" online");
-    else M5.Display.println("");
-
-    // List agents - show self first, then others
-    int y = 78;
-    if (registryConnected) {
-        // Show ourselves first
-        M5.Display.setCursor(15, y);
-        M5.Display.setTextColor(TFT_GREEN);
-        M5.Display.print("+ ");
+        M5.Display.setTextSize(1);
         M5.Display.setTextColor(TFT_CYAN);
-        M5.Display.print(deviceHandle);
-        M5.Display.setTextColor(TFT_DARKGREY);
-        M5.Display.println(" (you)");
-        y += 12;
-    }
+        M5.Display.setCursor(10, 32);
+        M5.Display.println(discoveredAgents[selectedAgentIndex].handle);
 
-    // Then show other agents
-    for (int i = 0; i < min(2, discoveredAgentCount); i++) {
-        M5.Display.setCursor(15, y);
-        M5.Display.setTextColor(discoveredAgents[i].healthy ? TFT_GREEN : TFT_RED);
-        M5.Display.print(discoveredAgents[i].healthy ? "+ " : "- ");
+        if (agentSkillCount == 0) {
+            M5.Display.setTextColor(TFT_YELLOW);
+            M5.Display.setCursor(10, 55);
+            M5.Display.println("No skills found");
+        } else {
+            int y = 48;
+            int startIdx = max(0, selectedSkillIndex - 2);
+            int endIdx = min(agentSkillCount, startIdx + 5);
+
+            for (int i = startIdx; i < endIdx; i++) {
+                bool selected = (i == selectedSkillIndex);
+                if (selected) {
+                    M5.Display.fillRect(0, y - 2, 240, 14, TFT_NAVY);
+                }
+                M5.Display.setCursor(10, y);
+                M5.Display.setTextColor(selected ? TFT_WHITE : TFT_LIGHTGREY);
+                M5.Display.print(selected ? "> " : "  ");
+
+                String skillName = agentSkills[i].name;
+                if (skillName.length() > 20) skillName = skillName.substring(0, 20);
+                M5.Display.println(skillName);
+                y += 14;
+            }
+        }
+
+        // Show last result if any
+        if (lastSkillResult.length() > 0) {
+            M5.Display.setTextColor(TFT_GREEN);
+            M5.Display.setCursor(10, 108);
+            String result = lastSkillResult.substring(0, 30);
+            M5.Display.println(result);
+        }
+
+        M5.Display.setTextColor(TFT_YELLOW);
+        M5.Display.setCursor(5, 125);
+        M5.Display.print("A:Run B:Next PWR:Back");
+    } else {
+        // Show agent list
+        drawHeader("Agents");
+
+        M5.Display.setTextSize(1);
+
+        int totalAgents = discoveredAgentCount;
         M5.Display.setTextColor(TFT_WHITE);
-        // Truncate long handles
-        String handle = discoveredAgents[i].handle;
-        if (handle.length() > 18) handle = handle.substring(0, 18) + "..";
-        M5.Display.println(handle);
-        y += 12;
+        M5.Display.setCursor(10, 32);
+        M5.Display.print(totalAgents);
+        M5.Display.println(totalAgents == 1 ? " agent found" : " agents found");
+
+        if (totalAgents == 0) {
+            M5.Display.setTextColor(TFT_YELLOW);
+            M5.Display.setCursor(10, 55);
+            M5.Display.println("Press A to scan");
+        } else {
+            int y = 48;
+            int startIdx = max(0, selectedAgentIndex - 2);
+            int endIdx = min(discoveredAgentCount, startIdx + 5);
+
+            for (int i = startIdx; i < endIdx; i++) {
+                bool selected = (i == selectedAgentIndex);
+                if (selected) {
+                    M5.Display.fillRect(0, y - 2, 240, 14, TFT_NAVY);
+                }
+                M5.Display.setCursor(5, y);
+                M5.Display.setTextColor(discoveredAgents[i].healthy ? TFT_GREEN : TFT_RED);
+                M5.Display.print(selected ? "> " : "  ");
+                M5.Display.print(discoveredAgents[i].healthy ? "+ " : "- ");
+
+                M5.Display.setTextColor(selected ? TFT_WHITE : TFT_LIGHTGREY);
+                String handle = discoveredAgents[i].handle;
+                if (handle.length() > 18) handle = handle.substring(0, 18);
+                M5.Display.println(handle);
+                y += 14;
+            }
+        }
+
+        M5.Display.setTextColor(TFT_YELLOW);
+        M5.Display.setCursor(5, 125);
+        M5.Display.print("A:Select B:Next");
     }
-
-    // Press A to refresh
-    M5.Display.setTextColor(TFT_YELLOW);
-    M5.Display.setCursor(10, 118);
-    M5.Display.println("A:Refresh");
-
-    drawNavHint();
 }
 
 void drawIRScreen() {
@@ -1865,11 +2004,36 @@ void loop() {
     // Process WebSocket events (tunnel)
     webSocket.loop();
 
-    // Button B: Next screen
+    // Button B: Next item or next screen
     if (M5.BtnB.wasPressed()) {
-        currentScreen = (MenuScreen)((currentScreen + 1) % MENU_COUNT);
-        needsRedraw = true;
         M5.Speaker.tone(800, 50);  // Click sound
+
+        if (currentScreen == MENU_DISCOVERY) {
+            if (viewingAgentSkills) {
+                // Scroll through skills
+                selectedSkillIndex = (selectedSkillIndex + 1) % max(1, agentSkillCount);
+            } else {
+                // Scroll through agents
+                if (discoveredAgentCount > 0) {
+                    selectedAgentIndex = (selectedAgentIndex + 1) % discoveredAgentCount;
+                }
+            }
+            needsRedraw = true;
+        } else {
+            // Normal: go to next screen
+            currentScreen = (MenuScreen)((currentScreen + 1) % MENU_COUNT);
+            needsRedraw = true;
+        }
+    }
+
+    // Power button: Back (in Discovery skills view)
+    if (M5.BtnPWR.wasPressed()) {
+        if (currentScreen == MENU_DISCOVERY && viewingAgentSkills) {
+            viewingAgentSkills = false;
+            lastSkillResult = "";
+            needsRedraw = true;
+            M5.Speaker.tone(600, 50);
+        }
     }
 
     // Button A: Action on current screen
@@ -1878,16 +2042,48 @@ void loop() {
 
         switch (currentScreen) {
             case MENU_DISCOVERY:
-                // Refresh discovery - re-register and discover agents
-                M5.Display.fillScreen(TFT_BLACK);
-                M5.Display.setCursor(10, 50);
-                M5.Display.setTextColor(TFT_YELLOW);
-                M5.Display.println("Discovering...");
-                if (!registryConnected) {
-                    registerWithRegistry();
+                if (viewingAgentSkills) {
+                    // Execute selected skill
+                    if (agentSkillCount > 0 && selectedAgentIndex >= 0) {
+                        M5.Display.fillScreen(TFT_BLACK);
+                        M5.Display.setCursor(10, 50);
+                        M5.Display.setTextColor(TFT_YELLOW);
+                        M5.Display.println("Executing...");
+                        M5.Display.setCursor(10, 70);
+                        M5.Display.println(agentSkills[selectedSkillIndex].name);
+
+                        lastSkillResult = executeSkill(selectedAgentIndex, selectedSkillIndex);
+
+                        // Show result briefly on device display too
+                        handleDisplayShow(lastSkillResult.substring(0, 50));
+                    }
+                    needsRedraw = true;
+                } else if (discoveredAgentCount > 0 && selectedAgentIndex >= 0) {
+                    // Select agent and fetch skills
+                    M5.Display.fillScreen(TFT_BLACK);
+                    M5.Display.setCursor(10, 50);
+                    M5.Display.setTextColor(TFT_YELLOW);
+                    M5.Display.println("Loading skills...");
+
+                    fetchAgentSkills(selectedAgentIndex);
+                    selectedSkillIndex = 0;
+                    viewingAgentSkills = true;
+                    needsRedraw = true;
+                } else {
+                    // No agents - refresh discovery
+                    M5.Display.fillScreen(TFT_BLACK);
+                    M5.Display.setCursor(10, 50);
+                    M5.Display.setTextColor(TFT_YELLOW);
+                    M5.Display.println("Discovering...");
+                    if (!registryConnected) {
+                        registerWithRegistry();
+                    }
+                    discoverAgents();
+                    if (discoveredAgentCount > 0) {
+                        selectedAgentIndex = 0;
+                    }
+                    needsRedraw = true;
                 }
-                discoverAgents();
-                needsRedraw = true;
                 break;
             case MENU_IR:
                 // Send test IR signal (placeholder)

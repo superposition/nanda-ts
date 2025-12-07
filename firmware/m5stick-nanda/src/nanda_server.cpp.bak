@@ -1,0 +1,682 @@
+/**
+ * NANDA A2A Server for M5StickC Plus 2
+ *
+ * Exposes device peripherals as NANDA skills:
+ * - sensors/read: IMU (accel/gyro), temperature
+ * - display/show: LCD text/graphics
+ * - ir/send, ir/learn: Infrared TX/RX
+ * - button/status: Button states
+ * - buzzer/tone: Audio output
+ * - led/set: RGB LED control
+ * - battery/status: Power management
+ * - wifi/scan: Network scanning
+ */
+
+#include <M5StickCPlus2.h>
+#include <WiFi.h>
+#include <ESPmDNS.h>
+#include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
+#include <Preferences.h>
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+#define DEVICE_NAME "nanda-m5stick"
+#define AGENT_VERSION "1.0.0"
+#define AP_SSID "NANDA-Config"
+#define AP_PASSWORD "nandaadmin"
+#define HTTP_PORT 80
+#define MDNS_HOSTNAME "nanda-device"  // Accessible as nanda-device.local
+
+// ============================================================================
+// Global State
+// ============================================================================
+
+AsyncWebServer server(HTTP_PORT);
+Preferences preferences;
+bool wifiConnected = false;
+bool mdnsStarted = false;
+String deviceIP = "";
+String deviceHostname = MDNS_HOSTNAME;
+
+// Last sensor readings (cached)
+struct SensorData {
+    float accelX, accelY, accelZ;
+    float gyroX, gyroY, gyroZ;
+    float temperature;
+    float batteryVoltage;
+    int batteryPercent;
+    bool btnA, btnB, btnPwr;
+    unsigned long lastUpdate;
+} sensors;
+
+// IR learning buffer
+uint16_t irBuffer[256];
+size_t irBufferLen = 0;
+
+// ============================================================================
+// Agent Card (A2A Protocol)
+// ============================================================================
+
+String getAgentCard() {
+    JsonDocument doc;
+
+    doc["name"] = DEVICE_NAME;
+    doc["description"] = "M5StickC Plus 2 IoT device with sensors, display, IR, and controls";
+    // Use mDNS hostname if available, fallback to IP
+    if (mdnsStarted) {
+        doc["url"] = "http://" + deviceHostname + ".local";
+    } else {
+        doc["url"] = "http://" + deviceIP;
+    }
+    doc["version"] = AGENT_VERSION;
+
+    JsonArray inputModes = doc["defaultInputModes"].to<JsonArray>();
+    inputModes.add("application/json");
+
+    JsonArray outputModes = doc["defaultOutputModes"].to<JsonArray>();
+    outputModes.add("application/json");
+
+    JsonObject caps = doc["capabilities"].to<JsonObject>();
+    caps["streaming"] = false;
+    caps["pushNotifications"] = false;
+
+    JsonArray skills = doc["skills"].to<JsonArray>();
+
+    // Sensor skill
+    JsonObject sensorSkill = skills.add<JsonObject>();
+    sensorSkill["id"] = "sensors/read";
+    sensorSkill["name"] = "Read Sensors";
+    sensorSkill["description"] = "Read accelerometer, gyroscope, and temperature";
+
+    // Display skill
+    JsonObject displaySkill = skills.add<JsonObject>();
+    displaySkill["id"] = "display/show";
+    displaySkill["name"] = "Show on Display";
+    displaySkill["description"] = "Display text or graphics on LCD";
+    JsonArray displayParams = displaySkill["parameters"].to<JsonArray>();
+    JsonObject textParam = displayParams.add<JsonObject>();
+    textParam["name"] = "text";
+    textParam["type"] = "string";
+    textParam["required"] = true;
+
+    // IR send skill
+    JsonObject irSendSkill = skills.add<JsonObject>();
+    irSendSkill["id"] = "ir/send";
+    irSendSkill["name"] = "Send IR Signal";
+    irSendSkill["description"] = "Transmit infrared signal";
+
+    // IR learn skill
+    JsonObject irLearnSkill = skills.add<JsonObject>();
+    irLearnSkill["id"] = "ir/learn";
+    irLearnSkill["name"] = "Learn IR Signal";
+    irLearnSkill["description"] = "Capture infrared signal from remote";
+
+    // Button skill
+    JsonObject buttonSkill = skills.add<JsonObject>();
+    buttonSkill["id"] = "button/status";
+    buttonSkill["name"] = "Button Status";
+    buttonSkill["description"] = "Get current button states";
+
+    // Buzzer skill
+    JsonObject buzzerSkill = skills.add<JsonObject>();
+    buzzerSkill["id"] = "buzzer/tone";
+    buzzerSkill["name"] = "Play Tone";
+    buzzerSkill["description"] = "Play a tone on the buzzer";
+
+    // LED skill
+    JsonObject ledSkill = skills.add<JsonObject>();
+    ledSkill["id"] = "led/set";
+    ledSkill["name"] = "Set LED";
+    ledSkill["description"] = "Control the RGB LED";
+
+    // Battery skill
+    JsonObject batterySkill = skills.add<JsonObject>();
+    batterySkill["id"] = "battery/status";
+    batterySkill["name"] = "Battery Status";
+    batterySkill["description"] = "Get battery voltage and percentage";
+
+    // WiFi scan skill
+    JsonObject wifiSkill = skills.add<JsonObject>();
+    wifiSkill["id"] = "wifi/scan";
+    wifiSkill["name"] = "Scan WiFi";
+    wifiSkill["description"] = "Scan for nearby WiFi networks";
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+// ============================================================================
+// Peripheral Handlers
+// ============================================================================
+
+void updateSensors() {
+    auto imu = M5.Imu;
+    float ax, ay, az, gx, gy, gz, t;
+
+    imu.getAccel(&ax, &ay, &az);
+    imu.getGyro(&gx, &gy, &gz);
+    imu.getTemp(&t);
+
+    sensors.accelX = ax;
+    sensors.accelY = ay;
+    sensors.accelZ = az;
+    sensors.gyroX = gx;
+    sensors.gyroY = gy;
+    sensors.gyroZ = gz;
+    sensors.temperature = t;
+
+    sensors.batteryVoltage = M5.Power.getBatteryVoltage() / 1000.0;
+    sensors.batteryPercent = M5.Power.getBatteryLevel();
+
+    sensors.btnA = M5.BtnA.isPressed();
+    sensors.btnB = M5.BtnB.isPressed();
+    sensors.btnPwr = M5.BtnPWR.isPressed();
+
+    sensors.lastUpdate = millis();
+}
+
+String handleSensorsRead() {
+    updateSensors();
+
+    JsonDocument doc;
+
+    JsonObject accel = doc["accelerometer"].to<JsonObject>();
+    accel["x"] = sensors.accelX;
+    accel["y"] = sensors.accelY;
+    accel["z"] = sensors.accelZ;
+
+    JsonObject gyro = doc["gyroscope"].to<JsonObject>();
+    gyro["x"] = sensors.gyroX;
+    gyro["y"] = sensors.gyroY;
+    gyro["z"] = sensors.gyroZ;
+
+    doc["temperature"] = sensors.temperature;
+    doc["timestamp"] = sensors.lastUpdate;
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleDisplayShow(JsonDocument& params) {
+    String text = params["text"] | "Hello NANDA!";
+    int size = params["size"] | 2;
+    int x = params["x"] | 10;
+    int y = params["y"] | 40;
+    uint32_t color = params["color"] | 0xFFFFFF;
+    uint32_t bg = params["background"] | 0x000000;
+
+    M5.Lcd.fillScreen(bg);
+    M5.Lcd.setTextColor(color);
+    M5.Lcd.setTextSize(size);
+    M5.Lcd.setCursor(x, y);
+    M5.Lcd.println(text);
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["displayed"] = text;
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleIrSend(JsonDocument& params) {
+    // TODO: Implement IR sending with raw data or protocol codes
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "IR signal sent";
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleIrLearn() {
+    // TODO: Implement IR learning with timeout
+    JsonDocument doc;
+    doc["success"] = false;
+    doc["message"] = "IR learning not yet implemented";
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleButtonStatus() {
+    M5.update();
+
+    JsonDocument doc;
+    doc["btnA"] = M5.BtnA.isPressed();
+    doc["btnB"] = M5.BtnB.isPressed();
+    doc["btnPwr"] = M5.BtnPWR.isPressed();
+    doc["btnA_wasPressed"] = M5.BtnA.wasPressed();
+    doc["btnB_wasPressed"] = M5.BtnB.wasPressed();
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleBuzzerTone(JsonDocument& params) {
+    int freq = params["frequency"] | 1000;
+    int duration = params["duration"] | 100;
+
+    M5.Speaker.tone(freq, duration);
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["frequency"] = freq;
+    doc["duration"] = duration;
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleLedSet(JsonDocument& params) {
+    int r = params["r"] | 0;
+    int g = params["g"] | 0;
+    int b = params["b"] | 0;
+
+    // M5StickC Plus 2 has internal LED on GPIO19
+    // For RGB, would need external NeoPixel
+    // Using simple on/off for now
+    bool on = (r > 0 || g > 0 || b > 0);
+    digitalWrite(19, on ? HIGH : LOW);
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["r"] = r;
+    doc["g"] = g;
+    doc["b"] = b;
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleBatteryStatus() {
+    JsonDocument doc;
+    doc["voltage"] = M5.Power.getBatteryVoltage() / 1000.0;
+    doc["percent"] = M5.Power.getBatteryLevel();
+    doc["isCharging"] = M5.Power.isCharging();
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+String handleWifiScan() {
+    int n = WiFi.scanNetworks();
+
+    JsonDocument doc;
+    JsonArray networks = doc["networks"].to<JsonArray>();
+
+    for (int i = 0; i < n; i++) {
+        JsonObject net = networks.add<JsonObject>();
+        net["ssid"] = WiFi.SSID(i);
+        net["rssi"] = WiFi.RSSI(i);
+        net["channel"] = WiFi.channel(i);
+        net["encryption"] = WiFi.encryptionType(i);
+    }
+
+    doc["count"] = n;
+
+    String output;
+    serializeJson(doc, output);
+    return output;
+}
+
+// ============================================================================
+// JSON-RPC Handler (A2A Protocol)
+// ============================================================================
+
+String handleJsonRpc(String& body) {
+    JsonDocument request;
+    DeserializationError error = deserializeJson(request, body);
+
+    if (error) {
+        JsonDocument errDoc;
+        errDoc["jsonrpc"] = "2.0";
+        errDoc["error"]["code"] = -32700;
+        errDoc["error"]["message"] = "Parse error";
+        errDoc["id"] = nullptr;
+        String output;
+        serializeJson(errDoc, output);
+        return output;
+    }
+
+    String method = request["method"] | "";
+    JsonDocument params = request["params"];
+    auto id = request["id"];
+
+    JsonDocument response;
+    response["jsonrpc"] = "2.0";
+    response["id"] = id;
+
+    String result;
+
+    // Route to skill handlers
+    if (method == "tasks/send" || method == "message/send") {
+        // A2A task execution
+        JsonDocument taskParams = request["params"]["message"]["parts"][0];
+        String skillId = taskParams["skill"] | "";
+        JsonDocument skillParams = taskParams["parameters"];
+
+        if (skillId == "sensors/read") {
+            result = handleSensorsRead();
+        } else if (skillId == "display/show") {
+            result = handleDisplayShow(skillParams);
+        } else if (skillId == "ir/send") {
+            result = handleIrSend(skillParams);
+        } else if (skillId == "ir/learn") {
+            result = handleIrLearn();
+        } else if (skillId == "button/status") {
+            result = handleButtonStatus();
+        } else if (skillId == "buzzer/tone") {
+            result = handleBuzzerTone(skillParams);
+        } else if (skillId == "led/set") {
+            result = handleLedSet(skillParams);
+        } else if (skillId == "battery/status") {
+            result = handleBatteryStatus();
+        } else if (skillId == "wifi/scan") {
+            result = handleWifiScan();
+        } else {
+            response["error"]["code"] = -32601;
+            response["error"]["message"] = "Unknown skill: " + skillId;
+            String output;
+            serializeJson(response, output);
+            return output;
+        }
+    } else {
+        response["error"]["code"] = -32601;
+        response["error"]["message"] = "Method not found";
+        String output;
+        serializeJson(response, output);
+        return output;
+    }
+
+    // Wrap result in A2A response format
+    JsonDocument resultDoc;
+    deserializeJson(resultDoc, result);
+    response["result"] = resultDoc;
+
+    String output;
+    serializeJson(response, output);
+    return output;
+}
+
+// ============================================================================
+// mDNS Setup
+// ============================================================================
+
+void startMDNS() {
+    if (MDNS.begin(deviceHostname.c_str())) {
+        // Add service for NANDA A2A discovery
+        MDNS.addService("http", "tcp", HTTP_PORT);
+        MDNS.addService("nanda", "tcp", HTTP_PORT);  // Custom service type
+        MDNS.addServiceTxt("nanda", "tcp", "version", AGENT_VERSION);
+        MDNS.addServiceTxt("nanda", "tcp", "type", "a2a-agent");
+
+        mdnsStarted = true;
+        Serial.println("mDNS started: http://" + deviceHostname + ".local");
+    } else {
+        Serial.println("mDNS failed to start");
+    }
+}
+
+// ============================================================================
+// WiFi Configuration
+// ============================================================================
+
+void startAPMode() {
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    deviceIP = WiFi.softAPIP().toString();
+
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setCursor(5, 10);
+    M5.Lcd.println("NANDA Config Mode");
+    M5.Lcd.setCursor(5, 30);
+    M5.Lcd.println("SSID: " + String(AP_SSID));
+    M5.Lcd.setCursor(5, 50);
+    M5.Lcd.println("Pass: " + String(AP_PASSWORD));
+    M5.Lcd.setCursor(5, 70);
+    M5.Lcd.println("http://" + deviceIP + "/setup");
+}
+
+bool connectToWiFi() {
+    String ssid = preferences.getString("wifi_ssid", "");
+    String pass = preferences.getString("wifi_pass", "");
+
+    if (ssid.length() == 0) {
+        return false;
+    }
+
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(5, 40);
+    M5.Lcd.println("Connecting to WiFi...");
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        M5.Lcd.print(".");
+        attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        deviceIP = WiFi.localIP().toString();
+        wifiConnected = true;
+
+        // Start mDNS for local network discovery
+        startMDNS();
+
+        return true;
+    }
+
+    return false;
+}
+
+// ============================================================================
+// HTTP Server Setup
+// ============================================================================
+
+void setupServer() {
+    // Agent Card endpoint (A2A discovery)
+    server.on("/.well-known/agent.json", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", getAgentCard());
+    });
+
+    // A2A JSON-RPC endpoint
+    server.on("/a2a", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
+        [](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total) {
+            String body = String((char*)data).substring(0, len);
+            String response = handleJsonRpc(body);
+            request->send(200, "application/json", response);
+        });
+
+    // Direct skill endpoints (convenience)
+    server.on("/api/sensors", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", handleSensorsRead());
+    });
+
+    server.on("/api/buttons", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", handleButtonStatus());
+    });
+
+    server.on("/api/battery", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", handleBatteryStatus());
+    });
+
+    server.on("/api/wifi/scan", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "application/json", handleWifiScan());
+    });
+
+    // WiFi setup page
+    server.on("/setup", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String html = R"(
+<!DOCTYPE html>
+<html>
+<head><title>NANDA Device Setup</title>
+<style>
+body { font-family: sans-serif; max-width: 400px; margin: 40px auto; padding: 20px; }
+input, button { width: 100%; padding: 10px; margin: 5px 0; box-sizing: border-box; }
+button { background: #007bff; color: white; border: none; cursor: pointer; }
+</style>
+</head>
+<body>
+<h2>NANDA Device Setup</h2>
+<form action="/setup" method="POST">
+<label>WiFi SSID:</label>
+<input type="text" name="ssid" required>
+<label>WiFi Password:</label>
+<input type="password" name="pass">
+<button type="submit">Save & Connect</button>
+</form>
+</body>
+</html>
+)";
+        request->send(200, "text/html", html);
+    });
+
+    server.on("/setup", HTTP_POST, [](AsyncWebServerRequest *request) {
+        String ssid = request->getParam("ssid", true)->value();
+        String pass = request->getParam("pass", true)->value();
+
+        preferences.putString("wifi_ssid", ssid);
+        preferences.putString("wifi_pass", pass);
+
+        request->send(200, "text/html", "<h2>Saved! Rebooting...</h2>");
+        delay(1000);
+        ESP.restart();
+    });
+
+    server.begin();
+}
+
+// ============================================================================
+// Display Status
+// ============================================================================
+
+void updateDisplay() {
+    if (!wifiConnected) return;
+
+    updateSensors();
+
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextSize(1);
+    M5.Lcd.setTextColor(WHITE);
+
+    // Header
+    M5.Lcd.setCursor(5, 5);
+    M5.Lcd.setTextColor(GREEN);
+    M5.Lcd.println("NANDA Agent");
+
+    // mDNS hostname + IP
+    M5.Lcd.setCursor(5, 20);
+    M5.Lcd.setTextColor(CYAN);
+    if (mdnsStarted) {
+        M5.Lcd.println(deviceHostname + ".local");
+    } else {
+        M5.Lcd.println(deviceIP);
+    }
+
+    // Sensor data
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.setCursor(5, 40);
+    M5.Lcd.printf("Accel: %.1f %.1f %.1f", sensors.accelX, sensors.accelY, sensors.accelZ);
+
+    M5.Lcd.setCursor(5, 55);
+    M5.Lcd.printf("Gyro: %.0f %.0f %.0f", sensors.gyroX, sensors.gyroY, sensors.gyroZ);
+
+    M5.Lcd.setCursor(5, 70);
+    M5.Lcd.printf("Temp: %.1fC", sensors.temperature);
+
+    // Battery
+    M5.Lcd.setCursor(5, 90);
+    M5.Lcd.setTextColor(sensors.batteryPercent > 20 ? GREEN : RED);
+    M5.Lcd.printf("Batt: %.2fV %d%%", sensors.batteryVoltage, sensors.batteryPercent);
+
+    // Buttons
+    M5.Lcd.setCursor(5, 110);
+    M5.Lcd.setTextColor(YELLOW);
+    M5.Lcd.printf("Btn: A%d B%d", sensors.btnA, sensors.btnB);
+}
+
+// ============================================================================
+// Main
+// ============================================================================
+
+void setup() {
+    M5.begin();
+    Serial.begin(115200);
+
+    preferences.begin("nanda", false);
+
+    // Initialize display
+    M5.Lcd.setRotation(1);
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setTextColor(WHITE);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.setCursor(20, 50);
+    M5.Lcd.println("NANDA");
+    delay(1000);
+
+    // Initialize LED pin
+    pinMode(19, OUTPUT);
+    digitalWrite(19, LOW);
+
+    // Try to connect to saved WiFi
+    if (!connectToWiFi()) {
+        startAPMode();
+    } else {
+        M5.Lcd.fillScreen(BLACK);
+        M5.Lcd.setCursor(5, 30);
+        M5.Lcd.println("Connected!");
+        M5.Lcd.setCursor(5, 50);
+        M5.Lcd.println(deviceHostname + ".local");
+        M5.Lcd.setCursor(5, 70);
+        M5.Lcd.setTextSize(1);
+        M5.Lcd.println("(" + deviceIP + ")");
+    }
+
+    setupServer();
+
+    Serial.println("=== NANDA A2A Server ===");
+    Serial.println("mDNS:  http://" + deviceHostname + ".local");
+    Serial.println("IP:    http://" + deviceIP);
+    Serial.println("Agent: http://" + deviceHostname + ".local/.well-known/agent.json");
+}
+
+void loop() {
+    M5.update();
+
+    static unsigned long lastDisplayUpdate = 0;
+    if (millis() - lastDisplayUpdate > 500) {
+        updateDisplay();
+        lastDisplayUpdate = millis();
+    }
+
+    // Button A: Toggle LED
+    if (M5.BtnA.wasPressed()) {
+        static bool ledState = false;
+        ledState = !ledState;
+        digitalWrite(19, ledState ? HIGH : LOW);
+    }
+
+    // Button B: Beep
+    if (M5.BtnB.wasPressed()) {
+        M5.Speaker.tone(1000, 100);
+    }
+
+    delay(10);
+}
