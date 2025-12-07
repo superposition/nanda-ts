@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1
+#
+# Jetson UGV NANDA Agent Dockerfile
+#
+# Optimized for NVIDIA Jetson (ARM64) with hardware access
+#
+# Build:
+#   docker build -f Dockerfile.jetson -t nanda-jetson-ugv .
+#
+# Run:
+#   docker run -d --name nanda-ugv \
+#     --privileged \
+#     -v /dev:/dev \
+#     -p 8000:8000 \
+#     -e REGISTRY_URL=http://192.168.0.100:3000 \
+#     nanda-jetson-ugv
+
+# Use Bun ARM64 image
+FROM oven/bun:1.1-debian AS base
+WORKDIR /app
+
+# Install system dependencies for hardware access
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Camera capture tools
+    fswebcam \
+    ffmpeg \
+    v4l-utils \
+    # Text-to-speech
+    espeak \
+    # Network tools
+    iproute2 \
+    iputils-ping \
+    # GPIO/serial access (if needed)
+    python3-serial \
+    # Clean up
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+FROM base AS deps
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile --production
+
+# Development dependencies (for building)
+FROM base AS dev-deps
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile
+
+# Build stage
+FROM dev-deps AS build
+COPY . .
+RUN bun run build
+
+# Production image
+FROM base AS runner
+
+# Create non-root user (but we may need privileged for hardware)
+RUN groupadd --system --gid 1001 nanda && \
+    useradd --system --uid 1001 --gid nanda nanda && \
+    # Add to video/dialout groups for hardware access
+    usermod -aG video,dialout nanda
+
+# Copy dependencies and built files
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/src ./src
+COPY --from=build /app/examples ./examples
+COPY --from=build /app/package.json ./
+
+# Set ownership
+RUN chown -R nanda:nanda /app
+
+# Note: We use root for hardware access, but the app runs as nanda
+# For full hardware access, use --privileged when running
+
+# Default port
+EXPOSE 8000
+
+# Environment variables
+ENV PORT=8000
+ENV ENABLE_CAMERA=true
+ENV ENABLE_MOTORS=true
+ENV CAMERA_DEVICE=/dev/video0
+ENV MOTOR_IFACE=/dev/ttyUSB0
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
+
+# Run the Jetson UGV agent
+CMD ["bun", "run", "examples/jetson-ugv-agent.ts"]

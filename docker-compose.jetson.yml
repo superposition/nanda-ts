@@ -1,0 +1,76 @@
+# Jetson UGV NANDA Agent Docker Compose
+#
+# Deploy on Jetson:
+#   1. Clone repo: git clone https://github.com/superposition/nanda-ts.git
+#   2. cd nanda-ts
+#   3. docker compose -f docker-compose.jetson.yml up -d
+#
+# Or pull and run directly:
+#   curl -fsSL https://raw.githubusercontent.com/superposition/nanda-ts/main/docker-compose.jetson.yml -o docker-compose.yml
+#   docker compose up -d
+
+services:
+  jetson-ugv:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+    image: nanda-jetson-ugv:latest
+    container_name: nanda-jetson-ugv
+    restart: unless-stopped
+
+    # Hardware access - required for camera, GPIO, serial
+    privileged: true
+    volumes:
+      - /dev:/dev
+      # Optional: persist data
+      # - ./data:/app/data
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      - PORT=8000
+      # Registry to join (set to your registry IP)
+      - REGISTRY_URL=${REGISTRY_URL:-}
+      # Hardware config
+      - ENABLE_CAMERA=${ENABLE_CAMERA:-true}
+      - ENABLE_MOTORS=${ENABLE_MOTORS:-true}
+      - CAMERA_DEVICE=${CAMERA_DEVICE:-/dev/video0}
+      - MOTOR_IFACE=${MOTOR_IFACE:-/dev/ttyUSB0}
+
+    # Network: use host network for mDNS discovery (optional)
+    # network_mode: host
+
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: Run local registry on the same Jetson
+  # Uncomment if you want the Jetson to also host a registry
+  #
+  # registry:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   image: nanda-registry:latest
+  #   container_name: nanda-registry
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - PORT=3000
+  #   command: ["bun", "run", "examples/local-registry.ts"]
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+  #     interval: 30s
+  #     timeout: 3s
+  #     retries: 3
